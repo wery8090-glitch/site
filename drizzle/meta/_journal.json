@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1789462358131,
+      "tag": "0000_sudden_blade",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1789462421628,
+      "tag": "0001_regular_santa_claus",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789463125593,
+      "tag": "0002_wealthy_shiva",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1789466707985,
+      "tag": "0003_marvelous_katie_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789565840000,
+      "tag": "0006_subscription_key_expiration",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789566300000,
+      "tag": "0007_subscription_key_activation_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789566600000,
+      "tag": "0008_client_version_required_plan",
+      "breakpoints": true
+    }
+  ]
+}
