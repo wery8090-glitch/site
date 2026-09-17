@@ -1,7 +1,7 @@
 import { createHash, randomBytes, verify } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { createAuditLog, createDeviceLinkCode, createLoaderChallenge, createLoaderSession, getDashboardSummary, getDeviceByPublicKey, getLatestVersion, getAvailableVersions, getLoaderSession, getValidLoaderChallenge, revokeLoaderSession, consumeLoaderChallenge, getUserVisuals } from "./db";
-import { authenticateSupabaseRequest } from "./supabaseAuth";
+import { authenticateFirebaseRequest } from "./firebaseAuth";
 
 function tokenHash(token: string) { return createHash("sha256").update(token).digest("hex"); }
 function bearer(req: Request) { const value = req.header("authorization"); return value?.startsWith("Bearer ") ? value.slice(7).trim() : null; }
@@ -15,8 +15,8 @@ export function verifyLoaderSignature(publicKey: string, nonce: string, signatur
 export function registerLoaderRoutes(app: Express) {
   app.get("/api/loader/health", (_req, res) => res.json({ ok: true, service: "chroma-api", time: new Date().toISOString() }));
   app.get("/api/loader/account", async (req, res) => {
-    const user = await authenticateSupabaseRequest(req);
-    if (!user) return res.status(401).json({ error: "UNAUTHORIZED", message: "Supabase session required." });
+    const user = await authenticateFirebaseRequest(req);
+    if (!user) return res.status(401).json({ error: "UNAUTHORIZED", message: "Firebase session required." });
     if (!user.id) return res.json({ user, subscription: null, latestSubscription: null, devices: [], latestVersion: null });
     const summary = await getDashboardSummary(user.id);
     if (!summary?.user || summary.user.status !== "active") return res.status(403).json({ error: "ACCOUNT_BLOCKED", message: "Account is not active." });
@@ -73,13 +73,13 @@ export function registerLoaderRoutes(app: Express) {
     return res.json({ version: version.version, minecraftVersion: version.minecraftVersion, fileName: version.fileName, downloadUrl: version.fileKey, releaseNotes: version.releaseNotes });
   });
   app.get("/api/loader/visuals", async (req, res) => {
-    const user = await authenticateSupabaseRequest(req);
+    const user = await authenticateFirebaseRequest(req);
     if (!user?.id) return res.status(401).json({ error: "AUTH_ERROR", message: "Session expired." });
     const visuals = await getUserVisuals(user.id);
     return res.json({ visuals });
   });
   app.get("/api/loader/versions", async (req, res) => {
-    const user = await authenticateSupabaseRequest(req);
+    const user = await authenticateFirebaseRequest(req);
     if (!user?.id) return res.status(401).json({ error: "AUTH_ERROR", message: "Session expired." });
     const summary = await getDashboardSummary(user.id);
     if (!summary?.user || summary.user.status !== "active") return res.status(403).json({ error: "ACCOUNT_BLOCKED", message: "Account is not active." });
