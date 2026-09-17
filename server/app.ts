@@ -4,7 +4,6 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./_core/oauth";
 import { registerStorageProxy } from "./_core/storageProxy";
 import { appRouter } from "./routers";
-import { registerLoaderRoutes } from "./loader";
 import { registerSupabaseRegistrationRoute } from "./supabaseRegistration";
 import { createContext } from "./_core/context";
 
@@ -30,7 +29,6 @@ export function createApp() {
   registerStorageProxy(app);
   registerOAuthRoutes(app);
   registerSupabaseRegistrationRoute(app);
-  registerLoaderRoutes(app);
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   return app;
 }

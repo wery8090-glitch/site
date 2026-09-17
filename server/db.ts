@@ -49,15 +49,15 @@ export async function getUserByOpenId(openId: string) {
   return result[0];
 }
 
-export async function ensureFirebaseProfile(user: { openId: string; email?: string | null; name?: string | null; username?: string | null }) {
-  await upsertUser({ openId: user.openId, email: user.email ?? null, name: user.name ?? null, username: user.username ?? user.email?.split("@")[0] ?? "Chroma User", loginMethod: "firebase", status: "active", lastSignedIn: new Date() });
+export async function ensureSupabaseProfile(user: { openId: string; email?: string | null; name?: string | null; username?: string | null }) {
+  await upsertUser({ openId: user.openId, email: user.email ?? null, name: user.name ?? null, username: user.username ?? user.email?.split("@")[0] ?? "Chroma User", loginMethod: "supabase", status: "active", lastSignedIn: new Date() });
   const db = await getDb();
   const stored = await getUserByOpenId(user.openId);
   if (!db || !stored) return stored;
   const freePlan = await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.slug, "free"), eq(subscriptionPlans.active, true))).limit(1);
   if (freePlan[0]) {
     const existing = await db.select().from(subscriptions).where(eq(subscriptions.userId, stored.id)).limit(1);
-    if (!existing[0]) await db.insert(subscriptions).values({ userId: stored.id, planId: freePlan[0].id, status: "active", startsAt: new Date(), endsAt: new Date(Date.now() + Math.max(1, freePlan[0].durationDays) * 86_400_000), provider: "Manual", adminNote: "Firebase registration default FREE plan" });
+    if (!existing[0]) await db.insert(subscriptions).values({ userId: stored.id, planId: freePlan[0].id, status: "active", startsAt: new Date(), endsAt: new Date(Date.now() + Math.max(1, freePlan[0].durationDays) * 86_400_000), provider: "Manual", adminNote: "Supabase registration default FREE plan" });
   }
   return stored;
 }

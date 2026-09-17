@@ -4,9 +4,7 @@ import { ArrowRight, Check, CircleCheck, Clock3, Download, ExternalLink, LockKey
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
 import { supabase, mapSupabaseError } from "@/lib/supabase";
-import { completePasswordlessLink, firebaseAuth, firebaseConfigured, firebaseErrorMessage, googleProvider, sendPasswordlessLink } from "@/lib/firebase";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, updateProfile } from "firebase/auth";
 import { Footer, PageHeading, PublicHeader } from "@/components/ChromaShell";
 import { PurchaseDialog } from "@/components/PurchaseDialog";
 import { CHROMA_FEATURES, FEATURE_GROUPS, FEATURE_POLICY } from "@shared/featureCatalog";
@@ -30,7 +28,7 @@ export function DownloadPage() { return <PublicPage eyebrow="Get Chroma" title="
 export function StatusPage() { return <PublicPage eyebrow="Service health" title="Everything important, visible." description="A simple status surface for the website, account, API, and future Loader services."><div className="grid gap-3">{[["Website", "Operational"], ["Account & OAuth", "Operational"], ["Database", "Operational"], ["Loader API", "Beta"]].map(([name, status], index) => <div key={name} className="surface flex items-center justify-between p-5"><div className="flex items-center gap-3"><span className={`h-2.5 w-2.5 rounded-full ${index === 3 ? "bg-amber-300" : "bg-primary"}`} /><span className="text-sm font-medium">{name}</span></div><span className={`text-xs ${index === 3 ? "text-amber-200" : "text-primary"}`}>{status}</span></div>)}</div></PublicPage>; }
 
 export function LoaderHandoffPage() {
-  const { firebaseUser, loading, isAuthenticated } = useAuth();
+  const { supabaseUser, loading, isAuthenticated } = useAuth();
   const [status, setStatus] = useState("Проверяем аккаунт…");
   const [error, setError] = useState("");
   useEffect(() => {
@@ -39,25 +37,27 @@ export function LoaderHandoffPage() {
     const state = params.get("state");
     if (!port || !state) { setError("Некорректная ссылка Loader."); return; }
     if (loading) return;
-    if (!isAuthenticated || !firebaseUser) { setStatus("Войдите в аккаунт, чтобы открыть Loader."); return; }
+    if (!isAuthenticated || !supabaseUser) { setStatus("Войдите в аккаунт, чтобы открыть Loader."); return; }
     let cancelled = false;
     void (async () => {
       try {
         setStatus("Передаём безопасную сессию в Loader…");
-        const idToken = await firebaseUser.getIdToken(true);
+        const { data: sessionData } = await supabase.auth.getSession();
+        const idToken = sessionData.session?.access_token;
+        if (!idToken) throw new Error("Supabase session недоступна.");
         const hosts = ["localhost", "127.0.0.1"];
         let delivered = false;
         for (const host of hosts) {
-          try { await fetch(`http://${host}:${encodeURIComponent(port)}/google-callback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, state, uid: firebaseUser.uid, email: firebaseUser.email ?? "", displayName: firebaseUser.displayName ?? "", idToken }) }); delivered = true; break; } catch { /* try the other loopback address */ }
+          try { await fetch(`http://${host}:${encodeURIComponent(port)}/google-callback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, state, uid: supabaseUser.id, email: supabaseUser.email ?? "", displayName: String(supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.username ?? ""), idToken }) }); delivered = true; break; } catch { /* try the other loopback address */ }
         }
         if (!delivered) throw new Error("Loader не принимает callback. Запустите Loader заново.");
         if (!cancelled) setStatus("Готово. Вернитесь в окно CHROMA Loader.");
       } catch (reason) { if (!cancelled) { setError(reason instanceof Error ? reason.message : "Не удалось передать сессию."); setStatus(""); } }
     })();
     return () => { cancelled = true; };
-  }, [firebaseUser, isAuthenticated, loading]);
+  }, [supabaseUser, isAuthenticated, loading]);
   const next = `/loader-handoff${window.location.search}`;
-  return <PublicPage eyebrow="CHROMA Loader" title="Открытие Loader" description="Эта страница передаёт только короткоживущий Firebase ID token через локальный защищённый callback. Пароль и токены не помещаются в URL."><div className="surface mx-auto max-w-lg p-7 text-center"><p className="text-sm text-muted-foreground">{status}</p>{error && <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[.06] p-3 text-sm text-red-100">{error}</p>}{!loading && !isAuthenticated && <div className="mt-6 flex justify-center gap-3"><Link href={`/login?next=${encodeURIComponent(next)}`} className="inline-flex h-10 items-center rounded-xl bg-primary px-4 text-sm font-bold text-[#10150c]">Войти</Link><Link href={`/register?next=${encodeURIComponent(next)}`} className="inline-flex h-10 items-center rounded-xl border border-white/10 px-4 text-sm font-semibold">Регистрация</Link></div>}</div></PublicPage>;
+  return <PublicPage eyebrow="CHROMA Loader" title="Открытие Loader" description="Эта страница передаёт только короткоживущий Supabase access token через локальный защищённый callback. Пароль и токены не помещаются в URL."><div className="surface mx-auto max-w-lg p-7 text-center"><p className="text-sm text-muted-foreground">{status}</p>{error && <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[.06] p-3 text-sm text-red-100">{error}</p>}{!loading && !isAuthenticated && <div className="mt-6 flex justify-center gap-3"><Link href={`/login?next=${encodeURIComponent(next)}`} className="inline-flex h-10 items-center rounded-xl bg-primary px-4 text-sm font-bold text-[#10150c]">Войти</Link><Link href={`/register?next=${encodeURIComponent(next)}`} className="inline-flex h-10 items-center rounded-xl border border-white/10 px-4 text-sm font-semibold">Регистрация</Link></div>}</div></PublicPage>;
 }
 
 export function LegalPage({ type }: { type: "terms" | "privacy" }) { const privacy = type === "privacy"; return <PublicPage eyebrow={privacy ? "Legal / Privacy" : "Legal / Terms"} title={privacy ? "Privacy, by design." : "Terms of use."} description={privacy ? "A concise placeholder policy surface for the product foundation. Replace with reviewed legal copy before launch." : "A concise placeholder terms surface for the product foundation. Replace with reviewed legal copy before launch."}><div className="prose prose-invert max-w-3xl prose-headings:tracking-tight prose-p:text-muted-foreground"><h2>{privacy ? "Data we need" : "Using Chroma"}</h2><p>{privacy ? "Chroma should collect only the account, device, subscription, and operational data needed to provide the service. Device binding stores a public key; the private key remains on the Loader device." : "Use the service lawfully and keep your account credentials secure. Access to closed client files is personal and may be revoked when a device or subscription is disabled."}</p><h2>{privacy ? "Security posture" : "Availability"}</h2><p>{privacy ? "Passwords and secrets must not be stored in plaintext. Audit records should avoid tokens and sensitive secrets. Production traffic should use HTTPS and secure cookies." : "The website and future Loader API may change while the product is being developed. Any payment provider terms must be shown at checkout once live billing is enabled."}</p><h2>Contact</h2><p>For launch-ready legal text, replace this draft with reviewed policy content and the correct operator contact details.</p></div></PublicPage>; }
@@ -77,46 +77,25 @@ function AuthCard({ mode }: { mode: "login" | "register" | "forgot" | "passwordl
   const [error, setError] = useState("");
   const syncProfile = trpc.auth.syncProfile.useMutation();
   const title = mode === "login" ? "С возвращением." : mode === "register" ? "Создать аккаунт." : mode === "passwordless" ? "Войти без пароля." : "Восстановить доступ.";
-  const finishAuth = async (next = "/dashboard", forceRefresh = false) => {
-    if (firebaseConfigured && firebaseAuth?.currentUser) {
-      // Firebase may publish auth state before the first ID token is available to the tRPC header.
-      // Wait for a fresh token before the protected profile sync, otherwise registration can
-      // briefly reach Dashboard and then be redirected after the first protected query fails.
-      await withAuthTimeout(firebaseAuth.currentUser.getIdToken(forceRefresh));
-      let lastError: unknown;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try { await withAuthTimeout(syncProfile.mutateAsync()); lastError = undefined; break; }
-        catch (error) { lastError = error; if (attempt === 0) await new Promise(resolve => window.setTimeout(resolve, 350)); }
-      }
-      if (lastError) throw lastError;
-    }
-    navigate(next);
-  };
-  useEffect(() => { if (mode !== "passwordless" || !firebaseConfigured || !firebaseAuth) return; withAuthTimeout(completePasswordlessLink()).then(credential => { if (credential) void withAuthTimeout(finishAuth()); }).catch(error => setError(error instanceof Error && error.message ? error.message : firebaseErrorMessage(error && typeof error === "object" && "code" in error ? String(error.code) : ""))); }, [mode]);
+  const finishAuth = async (next = "/dashboard") => { await withAuthTimeout(syncProfile.mutateAsync()); navigate(next); };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
     try {
       if (mode === "passwordless") {
-        if (!firebaseConfigured) throw new Error("Passwordless вход доступен после настройки Firebase.");
-        await withAuthTimeout(sendPasswordlessLink(email)); setMessage("Ссылка для входа отправлена на email. Откройте её на этом устройстве.");
+        const { error: otpError } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: `${window.location.origin}/passwordless` } });
+        if (otpError) throw otpError; setMessage("Ссылка для входа отправлена на email. Откройте её на этом устройстве.");
       } else if (mode === "forgot") {
-        if (firebaseConfigured && firebaseAuth) await withAuthTimeout(sendPasswordResetEmail(firebaseAuth, email, { url: `${window.location.origin}/login` }));
-        else { const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/login` }); if (resetError) throw resetError; }
-        setMessage("Если аккаунт существует, письмо для восстановления уже отправлено.");
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/login` }); if (resetError) throw resetError; setMessage("Если аккаунт существует, письмо для восстановления уже отправлено.");
       } else if (mode === "register") {
         if (password !== confirmPassword) throw new Error("Пароли не совпадают.");
-        if (firebaseConfigured && firebaseAuth) { const credential = await withAuthTimeout(createUserWithEmailAndPassword(firebaseAuth, email, password)); await withAuthTimeout(updateProfile(credential.user, { displayName: username || email.split("@")[0] })); const next = new URLSearchParams(window.location.search).get("next") || "/dashboard"; await withAuthTimeout(finishAuth(next, true)); }
-        else { const response = await fetch("/api/auth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, email, password }) }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.message || "Не удалось создать аккаунт."); if (payload.access_token) { await supabase.auth.setSession({ access_token: payload.access_token, refresh_token: payload.refresh_token || "" }); navigate("/dashboard"); } else setMessage("Аккаунт создан. Теперь войдите с email и паролем."); }
+        const { data, error: registerError } = await supabase.auth.signUp({ email, password, options: { data: { username, name: username }, emailRedirectTo: `${window.location.origin}/login` } });
+        if (registerError) throw registerError; if (data.session) await withAuthTimeout(finishAuth(new URLSearchParams(window.location.search).get("next") || "/dashboard")); else setMessage("Аккаунт создан. Подтвердите email и войдите снова.");
       } else {
-        if (firebaseConfigured && firebaseAuth) await withAuthTimeout(signInWithEmailAndPassword(firebaseAuth, email, password));
-        else { const { error: loginError } = await supabase.auth.signInWithPassword({ email, password }); if (loginError) throw loginError; }
-        const next = new URLSearchParams(window.location.search).get("next") || "/dashboard";
-        await withAuthTimeout(finishAuth(next));
+        const { error: loginError } = await supabase.auth.signInWithPassword({ email, password }); if (loginError) throw loginError; await withAuthTimeout(finishAuth(new URLSearchParams(window.location.search).get("next") || "/dashboard"));
       }
-    } catch (authError) { const code = authError && typeof authError === "object" && "code" in authError ? String(authError.code) : ""; setError(authError instanceof Error && !code ? authError.message : firebaseConfigured ? firebaseErrorMessage(code) : mapSupabaseError(authError instanceof Error ? authError.message : "")); } finally { setBusy(false); }
+    } catch (authError) { setError(mapSupabaseError(authError instanceof Error ? authError.message : "")); } finally { setBusy(false); }
   };
-  const googleLogin = async () => { if (!firebaseConfigured || !firebaseAuth) return; setBusy(true); setError(""); try { await withAuthTimeout(signInWithPopup(firebaseAuth, googleProvider)); const next = new URLSearchParams(window.location.search).get("next") || "/dashboard"; await withAuthTimeout(finishAuth(next)); } catch (authError) { const code = authError && typeof authError === "object" && "code" in authError ? String(authError.code) : ""; setError(firebaseErrorMessage(code)); } finally { setBusy(false); } };
-  return <div className="min-h-screen bg-background"><PublicHeader /><div className="container flex min-h-[calc(100vh-74px)] items-center justify-center py-16"><form onSubmit={submit} className="glass w-full max-w-md rounded-3xl p-8 sm:p-10"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary text-[#10150c]"><Sparkles className="h-6 w-6" /></div><h1 className="mt-7 text-center text-3xl font-semibold tracking-[-.04em]">{title}</h1><p className="mt-3 text-center text-sm leading-6 text-muted-foreground">Firebase account для сайта и будущего Loader.</p>{mode === "register" && <label className="mt-7 block text-xs font-semibold text-muted-foreground">ИМЯ<input required value={username} onChange={e => setUsername(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>}<label className="mt-7 block text-xs font-semibold text-muted-foreground">EMAIL<input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>{mode !== "forgot" && mode !== "passwordless" && <><label className="mt-4 block text-xs font-semibold text-muted-foreground">ПАРОЛЬ<input required minLength={6} type="password" value={password} onChange={e => setPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>{mode === "register" && <label className="mt-4 block text-xs font-semibold text-muted-foreground">ПОВТОРИТЕ ПАРОЛЬ<input required minLength={6} type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>}</>}{(error || message) && <div className={`mt-4 rounded-xl border p-3 text-sm ${error ? "border-red-300/20 bg-red-300/[.06] text-red-100" : "border-primary/20 bg-primary/[.06] text-primary"}`}>{error || message}</div>}{(mode === "login" || mode === "register") && firebaseConfigured && <button type="button" onClick={googleLogin} disabled={busy} className="mt-7 inline-flex h-12 w-full items-center justify-center rounded-xl border border-white/10 bg-white/[.04] font-semibold hover:bg-white/[.08]">Продолжить с Google</button>}<button disabled={busy} className="mt-3 inline-flex h-12 w-full items-center justify-center rounded-xl bg-primary font-bold text-[#10150c] transition hover:bg-[#d0ff73] disabled:cursor-wait disabled:opacity-60">{busy ? "Подождите…" : mode === "login" ? "ВОЙТИ  →" : mode === "register" ? "СОЗДАТЬ АККАУНТ  →" : mode === "passwordless" ? "ОТПРАВИТЬ ССЫЛКУ  →" : "ОТПРАВИТЬ ПИСЬМО  →"}</button><div className="mt-5 flex flex-wrap justify-center gap-x-3 gap-y-2 text-xs text-muted-foreground">{mode === "login" && <Link href="/passwordless" className="text-primary hover:underline">Войти без пароля</Link>}{mode === "login" && <Link href="/register" className="text-primary hover:underline">Создать аккаунт</Link>}{mode === "login" && <Link href="/forgot-password" className="hover:text-foreground">Забыли пароль?</Link>}{mode === "passwordless" && <Link href="/login" className="text-primary hover:underline">Войти с паролем</Link>}{mode === "register" && <Link href="/login" className="text-primary hover:underline">Уже есть аккаунт?</Link>}{mode === "forgot" && <Link href="/login" className="text-primary hover:underline">Войти</Link>}</div></form></div></div>;
+  return <div className="min-h-screen bg-background"><PublicHeader /><div className="container flex min-h-[calc(100vh-74px)] items-center justify-center py-16"><form onSubmit={submit} className="glass w-full max-w-md rounded-3xl p-8 sm:p-10"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary text-[#10150c]"><Sparkles className="h-6 w-6" /></div><h1 className="mt-7 text-center text-3xl font-semibold tracking-[-.04em]">{title}</h1><p className="mt-3 text-center text-sm leading-6 text-muted-foreground">Supabase account для сайта и CHROMA Loader.</p>{mode === "register" && <label className="mt-7 block text-xs font-semibold text-muted-foreground">ИМЯ<input required value={username} onChange={e => setUsername(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>}<label className="mt-7 block text-xs font-semibold text-muted-foreground">EMAIL<input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>{mode !== "forgot" && mode !== "passwordless" && <><label className="mt-4 block text-xs font-semibold text-muted-foreground">ПАРОЛЬ<input required minLength={6} type="password" value={password} onChange={e => setPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>{mode === "register" && <label className="mt-4 block text-xs font-semibold text-muted-foreground">ПОВТОРИТЕ ПАРОЛЬ<input required minLength={6} type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>}</>}{(error || message) && <div className={`mt-4 rounded-xl border p-3 text-sm ${error ? "border-red-300/20 bg-red-300/[.06] text-red-100" : "border-primary/20 bg-primary/[.06] text-primary"}`}>{error || message}</div>}<button disabled={busy} className="mt-3 inline-flex h-12 w-full items-center justify-center rounded-xl bg-primary font-bold text-[#10150c] transition hover:bg-[#d0ff73] disabled:cursor-wait disabled:opacity-60">{busy ? "Подождите…" : mode === "login" ? "ВОЙТИ  →" : mode === "register" ? "СОЗДАТЬ АККАУНТ  →" : mode === "passwordless" ? "ОТПРАВИТЬ ССЫЛКУ  →" : "ОТПРАВИТЬ ПИСЬМО  →"}</button><div className="mt-5 flex flex-wrap justify-center gap-x-3 gap-y-2 text-xs text-muted-foreground">{mode === "login" && <Link href="/passwordless" className="text-primary hover:underline">Войти без пароля</Link>}{mode === "login" && <Link href="/register" className="text-primary hover:underline">Создать аккаунт</Link>}{mode === "login" && <Link href="/forgot-password" className="hover:text-foreground">Забыли пароль?</Link>}{mode === "passwordless" && <Link href="/login" className="text-primary hover:underline">Войти с паролем</Link>}{mode === "register" && <Link href="/login" className="text-primary hover:underline">Уже есть аккаунт?</Link>}{mode === "forgot" && <Link href="/login" className="text-primary hover:underline">Войти</Link>}</div></form></div></div>;
 }
 export function LoginPage() { return <AuthCard mode="login" />; }
 export function RegisterPage() { return <AuthCard mode="register" />; }

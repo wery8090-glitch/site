@@ -4,7 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { consumeDeviceLinkCode, countActiveDevices, createAuditLog, createDevice, createSubscriptionKey, createVisual, ensureFirebaseProfile, extendSubscription, getAdminClientVersions, getAdminStats, getAdminSubscriptionData, getAdminSubscriptionKeys, getAdminVisuals, getDashboardSummary, getLatestVersion, getPlanBySlug, getPublicPlans, getUserDevices, getValidDeviceLinkCode, issueSubscription, publishClientVersion, redeemSubscriptionKey, revokeDevice, revokeSubscription, setClientVersionState, setVisualState, updateSubscription } from "./db";
+import { consumeDeviceLinkCode, countActiveDevices, createAuditLog, createDevice, createSubscriptionKey, createVisual, ensureSupabaseProfile, extendSubscription, getAdminClientVersions, getAdminStats, getAdminSubscriptionData, getAdminSubscriptionKeys, getAdminVisuals, getDashboardSummary, getLatestVersion, getPlanBySlug, getPublicPlans, getUserDevices, getValidDeviceLinkCode, issueSubscription, publishClientVersion, redeemSubscriptionKey, revokeDevice, revokeSubscription, setClientVersionState, setVisualState, updateSubscription } from "./db";
 import { PURCHASE_OFFERS, TELEGRAM_SELLER_URL } from "../shared/purchase";
 
 const subscriptionInput = z.object({
@@ -19,7 +19,7 @@ const subscriptionInput = z.object({
 export const appRouter = router({
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
-    syncProfile: protectedProcedure.mutation(({ ctx }) => ensureFirebaseProfile({ openId: ctx.user.openId, email: ctx.user.email, name: ctx.user.name, username: ctx.user.username })),
+    syncProfile: protectedProcedure.mutation(({ ctx }) => ensureSupabaseProfile({ openId: ctx.user.openId, email: ctx.user.email, name: ctx.user.name, username: ctx.user.username })),
     logout: publicProcedure.mutation(({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }),
   }),
 
