@@ -30,7 +30,6 @@ import { parse as parseCookieHeader2 } from "cookie";
 
 // server/db.ts
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
-import { createHash, randomBytes } from "node:crypto";
 import { drizzle } from "drizzle-orm/mysql2";
 
 // drizzle/schema.ts
@@ -107,7 +106,10 @@ var subscriptionKeys = mysqlTable(
     keyHash: varchar("keyHash", { length: 128 }).notNull(),
     planId: int("planId").notNull(),
     durationDays: int("durationDays").notNull(),
-    status: mysqlEnum("status", ["available", "redeemed", "revoked"]).default("available").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    maxActivations: int("maxActivations").default(1).notNull(),
+    usedActivations: int("usedActivations").default(0).notNull(),
+    status: mysqlEnum("status", ["available", "redeemed", "revoked", "expired"]).default("available").notNull(),
     redeemedByUserId: int("redeemedByUserId"),
     redeemedAt: timestamp("redeemedAt"),
     createdByUserId: int("createdByUserId"),
@@ -177,11 +179,29 @@ var clientVersions = mysqlTable(
     fileKey: varchar("fileKey", { length: 512 }).notNull(),
     fileName: varchar("fileName", { length: 160 }).notNull(),
     releaseNotes: text("releaseNotes").notNull(),
+    requiredPlan: varchar("requiredPlan", { length: 64 }).default("free").notNull(),
     isLatest: boolean("isLatest").default(false).notNull(),
     active: boolean("active").default(true).notNull(),
     createdAt: createdAt()
   },
   (table) => ({ versionUnique: uniqueIndex("client_versions_version_unique").on(table.version), latestIdx: index("client_versions_latest_idx").on(table.isLatest, table.active) })
+);
+var visuals = mysqlTable(
+  "visuals",
+  {
+    id: id(),
+    name: varchar("name", { length: 96 }).notNull(),
+    slug: varchar("slug", { length: 96 }).notNull(),
+    description: text("description").notNull(),
+    version: varchar("version", { length: 32 }).notNull(),
+    fileKey: varchar("fileKey", { length: 512 }).notNull(),
+    minecraftVersion: varchar("minecraftVersion", { length: 32 }).notNull(),
+    active: boolean("active").default(true).notNull(),
+    featured: boolean("featured").default(false).notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull()
+  },
+  (table) => ({ slugUnique: uniqueIndex("visuals_slug_unique").on(table.slug), activeIdx: index("visuals_active_idx").on(table.active) })
 );
 var downloads = mysqlTable("downloads", { id: id(), userId: int("userId").notNull(), deviceId: int("deviceId"), versionId: int("versionId").notNull(), createdAt: createdAt(), ipHash: varchar("ipHash", { length: 128 }) }, (table) => ({ userIdx: index("downloads_user_idx").on(table.userId), versionIdx: index("downloads_version_idx").on(table.versionId) }));
 var payments = mysqlTable("payments", { id: id(), userId: int("userId").notNull(), subscriptionId: int("subscriptionId"), provider: varchar("provider", { length: 48 }).notNull(), providerPaymentId: varchar("providerPaymentId", { length: 160 }), amount: int("amount").notNull(), currency: varchar("currency", { length: 8 }).default("RUB").notNull(), status: mysqlEnum("status", ["pending", "paid", "failed", "refunded"]).default("pending").notNull(), createdAt: createdAt(), paidAt: timestamp("paidAt") }, (table) => ({ userIdx: index("payments_user_idx").on(table.userId), providerIdx: index("payments_provider_idx").on(table.providerPaymentId) }));
@@ -244,9 +264,33 @@ async function getUserByOpenId(openId) {
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result[0];
 }
+async function ensureSupabaseProfile(user) {
+  await upsertUser({ openId: user.openId, email: user.email ?? null, name: user.name ?? null, username: user.username ?? user.email?.split("@")[0] ?? "Chroma User", loginMethod: "supabase", status: "active", lastSignedIn: /* @__PURE__ */ new Date() });
+  const db = await getDb();
+  const stored = await getUserByOpenId(user.openId);
+  if (!db || !stored) return stored;
+  const freePlan = await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.slug, "free"), eq(subscriptionPlans.active, true))).limit(1);
+  if (freePlan[0]) {
+    const existing = await db.select().from(subscriptions).where(eq(subscriptions.userId, stored.id)).limit(1);
+    if (!existing[0]) await db.insert(subscriptions).values({ userId: stored.id, planId: freePlan[0].id, status: "active", startsAt: /* @__PURE__ */ new Date(), endsAt: new Date(Date.now() + Math.max(1, freePlan[0].durationDays) * 864e5), provider: "Manual", adminNote: "Supabase registration default FREE plan" });
+  }
+  return stored;
+}
 async function getPublicPlans() {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return [
+    { id: 1, name: "FREE", slug: "free", description: "Basic Chroma access after registration.", price: 0, currency: "RUB", durationDays: 36500, deviceLimit: 1, features: JSON.stringify(["Basic features", "Access after registration", "Client download access"]), active: true, createdAt: /* @__PURE__ */ new Date(0), updatedAt: /* @__PURE__ */ new Date(0) },
+    { id: 2, name: "BASE", slug: "base", description: "A focused starting point for the visual client.", price: 1e4, currency: "RUB", durationDays: 30, deviceLimit: 1, features: JSON.stringify(["Full visual client", "1 device", "Core updates"]), active: true, createdAt: /* @__PURE__ */ new Date(0), updatedAt: /* @__PURE__ */ new Date(0) },
+    { id: 3, name: "PREMIUM", slug: "premium", description: "The complete Chroma experience for focused play.", price: 2e4, currency: "RUB", durationDays: 30, deviceLimit: 2, features: JSON.stringify(["Full visual client", "2 devices", "Performance profiles", "Priority updates"]), active: true, createdAt: /* @__PURE__ */ new Date(0), updatedAt: /* @__PURE__ */ new Date(0) },
+    { id: 4, name: "PREMIUM + BETA", slug: "premium_beta", description: "Early access to updates and new features.", price: 29e3, currency: "RUB", durationDays: 30, deviceLimit: 3, features: JSON.stringify(["Everything in Premium", "3 devices", "Early access", "Extended support"]), active: true, createdAt: /* @__PURE__ */ new Date(0), updatedAt: /* @__PURE__ */ new Date(0) }
+  ];
+  const now = /* @__PURE__ */ new Date();
+  await db.insert(subscriptionPlans).values([
+    { name: "FREE", slug: "free", description: "Basic Chroma access after registration.", price: 0, currency: "RUB", durationDays: 36500, deviceLimit: 1, features: JSON.stringify(["Basic features", "Access after registration", "Client download access"]), active: true },
+    { name: "BASE", slug: "base", description: "A focused starting point for the visual client.", price: 1e4, currency: "RUB", durationDays: 30, deviceLimit: 1, features: JSON.stringify(["Full visual client", "1 device", "Core updates"]), active: true },
+    { name: "PREMIUM", slug: "premium", description: "The complete Chroma experience for focused play.", price: 2e4, currency: "RUB", durationDays: 30, deviceLimit: 2, features: JSON.stringify(["Full visual client", "2 devices", "Performance profiles", "Priority updates"]), active: true },
+    { name: "PREMIUM + BETA", slug: "premium_beta", description: "Early access to updates and new features.", price: 29e3, currency: "RUB", durationDays: 30, deviceLimit: 3, features: JSON.stringify(["Everything in Premium", "3 devices", "Early access", "Extended support"]), active: true }
+  ]).onDuplicateKeyUpdate({ set: { active: true, updatedAt: now } });
   return db.select().from(subscriptionPlans).where(eq(subscriptionPlans.active, true)).orderBy(subscriptionPlans.price);
 }
 async function getDashboardSummary(userId) {
@@ -265,12 +309,35 @@ async function getDashboardSummary(userId) {
 async function getAdminSubscriptionData() {
   const db = await getDb();
   if (!db) return { users: [], plans: [], subscriptions: [] };
+  await syncSupabaseUsers();
   const [userRows, planRows, subscriptionRows] = await Promise.all([
-    db.select({ id: users.id, name: users.name, email: users.email, username: users.username, role: users.role, status: users.status }).from(users).orderBy(desc(users.createdAt)),
+    db.select({ id: users.id, name: users.name, email: users.email, username: users.username, role: users.role, status: users.status, createdAt: users.createdAt }).from(users).orderBy(desc(users.createdAt)),
     db.select().from(subscriptionPlans).where(eq(subscriptionPlans.active, true)).orderBy(subscriptionPlans.price),
     db.select({ subscription: subscriptions, plan: subscriptionPlans, user: users }).from(subscriptions).innerJoin(subscriptionPlans, eq(subscriptions.planId, subscriptionPlans.id)).innerJoin(users, eq(subscriptions.userId, users.id)).orderBy(desc(subscriptions.createdAt)).limit(100)
   ]);
   return { users: userRows, plans: planRows, subscriptions: subscriptionRows };
+}
+async function syncSupabaseUsers() {
+  const db = await getDb();
+  const serviceKey = process.env.SUPABASE_SECRET_KEY;
+  const supabaseUrl3 = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
+  if (!db || !serviceKey || !supabaseUrl3) return 0;
+  try {
+    const response = await fetch(`${supabaseUrl3}/auth/v1/admin/users?per_page=1000`, {
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` }
+    });
+    if (!response.ok) return 0;
+    const payload = await response.json();
+    let imported = 0;
+    for (const authUser of payload.users ?? []) {
+      const username = typeof authUser.user_metadata?.username === "string" ? authUser.user_metadata.username : authUser.email?.split("@")[0] ?? "Chroma User";
+      await upsertUser({ openId: authUser.id, email: authUser.email ?? null, username, name: username, loginMethod: "supabase", lastSignedIn: authUser.created_at ? new Date(authUser.created_at) : /* @__PURE__ */ new Date() });
+      imported += 1;
+    }
+    return imported;
+  } catch {
+    return 0;
+  }
 }
 async function issueSubscription(input) {
   const db = await getDb();
@@ -300,45 +367,10 @@ async function revokeSubscription(id2) {
   const result = await db.update(subscriptions).set({ status: "cancelled" }).where(eq(subscriptions.id, id2));
   return result[0].affectedRows > 0;
 }
-function formatSubscriptionKey() {
-  const part = (size) => randomBytes(size).toString("base64url").replace(/[^A-Za-z0-9]/g, "").slice(0, size);
-  return `CHROMA-${part(8)}-${part(4)}-${part(6)}`;
-}
-var keyDigest = (key) => createHash("sha256").update(key.trim().toUpperCase()).digest("hex");
-async function createSubscriptionKey(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const plain = formatSubscriptionKey();
-  const result = await db.insert(subscriptionKeys).values({ keyHash: keyDigest(plain), planId: input.planId, durationDays: input.durationDays, createdByUserId: input.createdByUserId, status: "available" });
-  return { id: Number(result[0].insertId), key: plain, planId: input.planId, durationDays: input.durationDays };
-}
-async function redeemSubscriptionKey(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select({ key: subscriptionKeys, plan: subscriptionPlans }).from(subscriptionKeys).innerJoin(subscriptionPlans, eq(subscriptionKeys.planId, subscriptionPlans.id)).where(and(eq(subscriptionKeys.keyHash, keyDigest(input.key)), eq(subscriptionKeys.status, "available"))).limit(1);
-  const row = rows[0];
-  if (!row) return null;
-  const now = /* @__PURE__ */ new Date();
-  const result = await db.update(subscriptionKeys).set({ status: "redeemed", redeemedByUserId: input.userId, redeemedAt: now }).where(and(eq(subscriptionKeys.id, row.key.id), eq(subscriptionKeys.status, "available")));
-  if (result[0].affectedRows === 0) return null;
-  const subscriptionId = await issueSubscription({ userId: input.userId, planId: row.plan.id, startsAt: now, endsAt: new Date(now.getTime() + row.key.durationDays * 864e5), provider: "Manual", adminNote: `Redeemed subscription key ${row.key.id}` });
-  return subscriptionId ? { subscriptionId, plan: row.plan, durationDays: row.key.durationDays } : null;
-}
-async function getAdminSubscriptionKeys() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select({ key: subscriptionKeys, plan: subscriptionPlans, user: users }).from(subscriptionKeys).innerJoin(subscriptionPlans, eq(subscriptionKeys.planId, subscriptionPlans.id)).leftJoin(users, eq(subscriptionKeys.redeemedByUserId, users.id)).orderBy(desc(subscriptionKeys.createdAt)).limit(200);
-}
 async function getUserDevices(userId) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(devices).where(eq(devices.userId, userId)).orderBy(desc(devices.createdAt));
-}
-async function createDeviceLinkCode(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const result = await db.insert(deviceLinkCodes).values(input);
-  return Number(result[0].insertId);
 }
 async function getValidDeviceLinkCode(codeHash) {
   const db = await getDb();
@@ -358,41 +390,11 @@ async function createDevice(input) {
   const result = await db.insert(devices).values({ ...input, status: "active" });
   return Number(result[0].insertId);
 }
-async function getDeviceByPublicKey(publicKey) {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select().from(devices).where(eq(devices.publicKey, publicKey)).limit(1);
-  return rows[0] ?? null;
-}
 async function countActiveDevices(userId) {
   const db = await getDb();
   if (!db) return 0;
   const rows = await db.select({ count: sql`count(*)` }).from(devices).where(and(eq(devices.userId, userId), eq(devices.status, "active")));
   return Number(rows[0]?.count ?? 0);
-}
-async function createLoaderChallenge(input) {
-  const db = await getDb();
-  if (!db) return null;
-  await db.insert(loaderChallenges).values(input);
-  return true;
-}
-async function getValidLoaderChallenge(deviceId, nonce) {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select().from(loaderChallenges).where(and(eq(loaderChallenges.deviceId, deviceId), eq(loaderChallenges.nonce, nonce), isNull(loaderChallenges.usedAt), gt(loaderChallenges.expiresAt, /* @__PURE__ */ new Date()))).limit(1);
-  return rows[0] ?? null;
-}
-async function consumeLoaderChallenge(id2) {
-  const db = await getDb();
-  if (!db) return false;
-  const result = await db.update(loaderChallenges).set({ usedAt: /* @__PURE__ */ new Date() }).where(and(eq(loaderChallenges.id, id2), isNull(loaderChallenges.usedAt)));
-  return result[0].affectedRows > 0;
-}
-async function createLoaderSession(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const result = await db.insert(loaderSessions).values(input);
-  return Number(result[0].insertId);
 }
 async function revokeDevice(userId, deviceId) {
   const db = await getDb();
@@ -423,16 +425,40 @@ async function getAdminStats() {
   ]);
   return { users: Number(userCount[0]?.count ?? 0), activeSubscriptions: Number(activeSubs[0]?.count ?? 0), devices: Number(deviceCount[0]?.count ?? 0), downloads: Number(downloadCount[0]?.count ?? 0), latestVersion: latest?.version ?? "\u2014" };
 }
-async function getLoaderSession(tokenHash2) {
+async function getAdminClientVersions() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(clientVersions).orderBy(desc(clientVersions.createdAt)).limit(100);
+}
+async function publishClientVersion(input) {
   const db = await getDb();
   if (!db) return null;
-  const rows = await db.select({ session: loaderSessions, device: devices, user: users }).from(loaderSessions).innerJoin(devices, eq(loaderSessions.deviceId, devices.id)).innerJoin(users, eq(loaderSessions.userId, users.id)).where(and(eq(loaderSessions.tokenHash, tokenHash2), isNull(loaderSessions.revokedAt), gt(loaderSessions.expiresAt, /* @__PURE__ */ new Date()), eq(devices.status, "active"), eq(users.status, "active"))).limit(1);
-  return rows[0] ?? null;
+  if (input.makeLatest) await db.update(clientVersions).set({ isLatest: false });
+  const result = await db.insert(clientVersions).values({ ...input, isLatest: input.makeLatest, active: true });
+  return Number(result[0].insertId);
 }
-async function revokeLoaderSession(tokenHash2) {
+async function setClientVersionState(id2, input) {
   const db = await getDb();
   if (!db) return false;
-  const result = await db.update(loaderSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq(loaderSessions.tokenHash, tokenHash2));
+  if (input.isLatest) await db.update(clientVersions).set({ isLatest: false });
+  const result = await db.update(clientVersions).set(input).where(eq(clientVersions.id, id2));
+  return result[0].affectedRows > 0;
+}
+async function getAdminVisuals() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(visuals).orderBy(desc(visuals.updatedAt)).limit(200);
+}
+async function createVisual(input) {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.insert(visuals).values({ ...input, active: true });
+  return Number(result[0].insertId);
+}
+async function setVisualState(id2, input) {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db.update(visuals).set(input).where(eq(visuals.id, id2));
   return result[0].affectedRows > 0;
 }
 
@@ -800,7 +826,7 @@ function registerStorageProxy(app2) {
 }
 
 // server/routers.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash } from "node:crypto";
 import { TRPCError as TRPCError2 } from "@trpc/server";
 import { z } from "zod";
 
@@ -841,17 +867,17 @@ var adminProcedure = t.procedure.use(
 );
 
 // shared/purchase.ts
-var TELEGRAM_SELLER_URL = "https://t.me/cupsov";
+var TELEGRAM_SELLER_URL = "https://t.me/ChromaVisual";
 var PURCHASE_OFFERS = [
-  { plan: "base", duration: "month", label: "1 month", price: 100, url: "https://funpay.com/lots/offer?id=77264646" },
-  { plan: "base", duration: "three_months", label: "3 months", price: 250, url: "https://funpay.com/lots/offer?id=77264807" },
-  { plan: "base", duration: "lifetime", label: "Lifetime", price: 390, url: "https://funpay.com/lots/offer?id=77264834" },
-  { plan: "premium", duration: "month", label: "1 month", price: 200, url: "https://funpay.com/lots/offer?id=77264864" },
-  { plan: "premium", duration: "three_months", label: "3 months", price: 400, url: "https://funpay.com/lots/offer?id=77264889" },
-  { plan: "premium", duration: "lifetime", label: "Lifetime", price: 500, url: "https://funpay.com/lots/offer?id=77264917" },
-  { plan: "premium_beta", duration: "month", label: "1 month", price: 290, url: "https://funpay.com/lots/offer?id=77264949" },
-  { plan: "premium_beta", duration: "three_months", label: "3 months", price: 450, url: "https://funpay.com/lots/offer?id=77265002" },
-  { plan: "premium_beta", duration: "lifetime", label: "Lifetime", price: 650, url: "https://funpay.com/lots/offer?id=77265043" }
+  { plan: "base", duration: "month", label: "1 month", price: 118.13, url: "https://funpay.com/lots/offer?id=77351057" },
+  { plan: "base", duration: "three_months", label: "3 months", price: 295.32, url: "https://funpay.com/lots/offer?id=77351126" },
+  { plan: "base", duration: "six_months", label: "6 months", price: 425.25, url: "https://funpay.com/lots/offer?id=77351273" },
+  { plan: "premium", duration: "month", label: "1 month", price: 236.25, url: "https://funpay.com/lots/offer?id=77351346" },
+  { plan: "premium", duration: "three_months", label: "3 months", price: 472.51, url: "https://funpay.com/lots/offer?id=77351406" },
+  { plan: "premium", duration: "six_months", label: "6 months", price: 590.63, url: "https://funpay.com/lots/offer?id=77351477" },
+  { plan: "premium_beta", duration: "month", label: "1 month", price: 342.57, url: "https://funpay.com/lots/offer?id=77351602" },
+  { plan: "premium_beta", duration: "three_months", label: "3 months", price: 531.57, url: "https://funpay.com/lots/offer?id=77351651" },
+  { plan: "premium_beta", duration: "six_months", label: "6 months", price: 767.82, url: "https://funpay.com/lots/offer?id=77351694" }
 ];
 var FunPayProvider = class {
   name = "FunPay";
@@ -877,6 +903,26 @@ var purchaseProviders = {
   Manual: new ManualProvider()
 };
 
+// server/supabaseSubscriptionApi.ts
+var SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
+var PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "sb_publishable_lA5GKwBVATAXDuZN2NTc-g_Y-Igb8Dr";
+var ENDPOINT = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/chroma-subscriptions`;
+function bearer(req) {
+  const value = req.header("authorization") ?? "";
+  return value.startsWith("Bearer ") ? value.slice(7).trim() : "";
+}
+async function callSupabaseSubscriptionApi(req, action, payload = {}) {
+  const token = bearer(req);
+  if (!token) throw new Error("UNAUTHORIZED");
+  const response = await fetch(ENDPOINT, { method: "POST", headers: { apikey: PUBLISHABLE_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...payload }) });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || (response.status === 403 ? "FORBIDDEN" : "SUBSCRIPTION_KEY_REQUEST_FAILED"));
+  return body.data;
+}
+function mapSubscriptionKeys(rows) {
+  return rows.map((row) => ({ key: { id: row.id, durationDays: row.duration_days, maxActivations: row.max_activations, usedActivations: row.used_activations, status: row.status, expiresAt: row.expires_at, createdAt: row.created_at }, plan: { id: row.plan_id, name: row.plan?.name ?? row.plan?.slug ?? "Plan", slug: row.plan?.slug ?? "" }, user: row.redeemed_by ? { id: row.redeemed_by, email: null } : null }));
+}
+
 // server/routers.ts
 var subscriptionInput = z.object({
   userId: z.number().int().positive(),
@@ -889,6 +935,7 @@ var subscriptionInput = z.object({
 var appRouter = router({
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
+    syncProfile: protectedProcedure.mutation(({ ctx }) => ensureSupabaseProfile({ openId: ctx.user.openId, email: ctx.user.email, name: ctx.user.name, username: ctx.user.username })),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -899,16 +946,14 @@ var appRouter = router({
     list: publicProcedure.query(() => getPublicPlans()),
     purchaseOffers: publicProcedure.query(() => ({ offers: PURCHASE_OFFERS, telegramUrl: TELEGRAM_SELLER_URL }))
   }),
-  dashboard: router({ summary: protectedProcedure.query(({ ctx }) => getDashboardSummary(ctx.user.id)), redeemKey: protectedProcedure.input(z.object({ key: z.string().trim().toUpperCase().regex(/^CHROMA-[A-Z0-9]{8}-[A-Z0-9]{4}-[A-Z0-9]{6}$/) })).mutation(async ({ ctx, input }) => {
-    const result = await redeemSubscriptionKey({ key: input.key, userId: ctx.user.id });
-    if (!result) throw new TRPCError2({ code: "BAD_REQUEST", message: "\u041A\u043B\u044E\u0447 \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u0435\u043D, \u0443\u0436\u0435 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D \u0438\u043B\u0438 \u043E\u0442\u043E\u0437\u0432\u0430\u043D." });
-    await createAuditLog({ userId: ctx.user.id, action: "SUBSCRIPTION_KEY_REDEEMED", metadata: { subscriptionId: result.subscriptionId, plan: result.plan.slug, durationDays: result.durationDays } });
-    return { success: true, plan: result.plan.name, durationDays: result.durationDays };
+  dashboard: router({ summary: protectedProcedure.query(({ ctx }) => getDashboardSummary(ctx.user.id)), redeemKey: protectedProcedure.input(z.object({ key: z.string().trim().toUpperCase().regex(/^CHROMA-[A-Z0-9]{12}-[A-Z0-9]{12}-[A-Z0-9]{12}$/) })).mutation(async ({ ctx, input }) => {
+    const result = await callSupabaseSubscriptionApi(ctx.req, "redeem_key", { key: input.key });
+    return { success: true, plan: result?.plan?.name ?? result?.plan?.slug ?? "Subscription", durationDays: result?.duration_days ?? 0, endsAt: result?.ends_at ?? null };
   }) }),
   devices: router({
     list: protectedProcedure.query(({ ctx }) => getUserDevices(ctx.user.id)),
     verifyLinkCode: protectedProcedure.input(z.object({ code: z.string().trim().toUpperCase().regex(/^CHRM-[A-Z0-9]{6}$/) })).mutation(async ({ ctx, input }) => {
-      const codeHash = createHash2("sha256").update(input.code).digest("hex");
+      const codeHash = createHash("sha256").update(input.code).digest("hex");
       const pending = await getValidDeviceLinkCode(codeHash);
       if (!pending) throw new TRPCError2({ code: "NOT_FOUND", message: "Invalid or expired link code" });
       const summary = await getDashboardSummary(ctx.user.id);
@@ -940,12 +985,38 @@ var appRouter = router({
     stats: adminProcedure.query(() => getAdminStats()),
     plans: adminProcedure.query(() => getPublicPlans()),
     subscriptionData: adminProcedure.query(() => getAdminSubscriptionData()),
-    subscriptionKeys: adminProcedure.query(() => getAdminSubscriptionKeys()),
-    createSubscriptionKey: adminProcedure.input(z.object({ planId: z.number().int().positive(), durationDays: z.number().int().min(1).max(36500) })).mutation(async ({ ctx, input }) => {
-      const result = await createSubscriptionKey({ ...input, createdByUserId: ctx.user.id });
-      if (!result) throw new TRPCError2({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
-      await createAuditLog({ userId: ctx.user.id, action: "ADMIN_SUBSCRIPTION_KEY_CREATED", metadata: { keyId: result.id, planId: input.planId, durationDays: input.durationDays } });
-      return result;
+    subscriptionKeys: adminProcedure.query(async ({ ctx }) => mapSubscriptionKeys(await callSupabaseSubscriptionApi(ctx.req, "admin_list_keys"))),
+    clientVersions: adminProcedure.query(() => getAdminClientVersions()),
+    visuals: adminProcedure.query(() => getAdminVisuals()),
+    publishClientVersion: adminProcedure.input(z.object({ version: z.string().trim().min(1).max(32), minecraftVersion: z.string().trim().min(1).max(32), fileKey: z.string().trim().url().max(512), fileName: z.string().trim().min(1).max(160), releaseNotes: z.string().trim().max(5e3).default(""), requiredPlan: z.enum(["free", "base", "premium", "premium_beta"]).default("free"), makeLatest: z.boolean().default(true) })).mutation(async ({ ctx, input }) => {
+      const id2 = await publishClientVersion(input);
+      if (!id2) throw new TRPCError2({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+      await createAuditLog({ userId: ctx.user.id, action: "ADMIN_CLIENT_VERSION_PUBLISHED", metadata: { id: id2, version: input.version, requiredPlan: input.requiredPlan, fileName: input.fileName } });
+      return { success: true, id: id2 };
+    }),
+    setClientVersionState: adminProcedure.input(z.object({ id: z.number().int().positive(), active: z.boolean().optional(), isLatest: z.boolean().optional() })).mutation(async ({ ctx, input }) => {
+      const success = await setClientVersionState(input.id, { active: input.active, isLatest: input.isLatest });
+      if (!success) throw new TRPCError2({ code: "NOT_FOUND", message: "Version not found" });
+      await createAuditLog({ userId: ctx.user.id, action: "ADMIN_CLIENT_VERSION_UPDATED", metadata: input });
+      return { success: true };
+    }),
+    createVisual: adminProcedure.input(z.object({ name: z.string().trim().min(1).max(96), slug: z.string().trim().regex(/^[a-z0-9-]+$/).max(96), description: z.string().trim().max(2e3).default(""), version: z.string().trim().min(1).max(32), fileKey: z.string().trim().url().max(512), minecraftVersion: z.string().trim().min(1).max(32), featured: z.boolean().default(false) })).mutation(async ({ ctx, input }) => {
+      const id2 = await createVisual(input);
+      if (!id2) throw new TRPCError2({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+      await createAuditLog({ userId: ctx.user.id, action: "ADMIN_VISUAL_CREATED", metadata: { id: id2, slug: input.slug } });
+      return { success: true, id: id2 };
+    }),
+    setVisualState: adminProcedure.input(z.object({ id: z.number().int().positive(), active: z.boolean().optional(), featured: z.boolean().optional() })).mutation(async ({ ctx, input }) => {
+      const success = await setVisualState(input.id, { active: input.active, featured: input.featured });
+      if (!success) throw new TRPCError2({ code: "NOT_FOUND", message: "Visual not found" });
+      await createAuditLog({ userId: ctx.user.id, action: "ADMIN_VISUAL_UPDATED", metadata: input });
+      return { success: true };
+    }),
+    createSubscriptionKey: adminProcedure.input(z.object({ planId: z.number().int().positive(), maxActivations: z.number().int().min(1).max(1e5), expiresAt: z.coerce.date() })).mutation(async ({ ctx, input }) => {
+      if (input.expiresAt <= /* @__PURE__ */ new Date()) throw new TRPCError2({ code: "BAD_REQUEST", message: "\u0414\u0430\u0442\u0430 \u043E\u043A\u043E\u043D\u0447\u0430\u043D\u0438\u044F \u0434\u043E\u043B\u0436\u043D\u0430 \u0431\u044B\u0442\u044C \u0432 \u0431\u0443\u0434\u0443\u0449\u0435\u043C." });
+      const planSlug = { 1: "free", 2: "base", 3: "premium", 4: "premium_beta" }[input.planId];
+      if (!planSlug) throw new TRPCError2({ code: "BAD_REQUEST", message: "\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0442\u0430\u0440\u0438\u0444 Supabase." });
+      return await callSupabaseSubscriptionApi(ctx.req, "admin_create_key", { plan_slug: planSlug, max_activations: input.maxActivations, expires_at: input.expiresAt.toISOString() });
     }),
     issueSubscription: adminProcedure.input(subscriptionInput).mutation(async ({ ctx, input }) => {
       if (input.endsAt <= input.startsAt) throw new TRPCError2({ code: "BAD_REQUEST", message: "End date must be after start date" });
@@ -976,133 +1047,8 @@ var appRouter = router({
   })
 });
 
-// server/loader.ts
-import { createHash as createHash3, randomBytes as randomBytes2, verify } from "node:crypto";
-
-// server/supabaseAuth.ts
-import { createRemoteJWKSet, jwtVerify as jwtVerify2 } from "jose";
-var supabaseUrl = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
-var jwksUrl = process.env.SUPABASE_JWKS_URL ?? `${supabaseUrl}/auth/v1/.well-known/jwks.json`;
-var jwks = createRemoteJWKSet(new URL(jwksUrl));
-function bearer(req) {
-  const value = req.header("authorization");
-  return value?.startsWith("Bearer ") ? value.slice(7).trim() : null;
-}
-async function authenticateSupabaseRequest(req) {
-  const token = bearer(req);
-  if (!token) return null;
-  try {
-    const { payload } = await jwtVerify2(token, jwks, { issuer: `${supabaseUrl}/auth/v1`, audience: "authenticated" });
-    if (typeof payload.sub !== "string" || payload.sub.length === 0) return null;
-    const email = typeof payload.email === "string" ? payload.email : null;
-    const metadata = payload.user_metadata && typeof payload.user_metadata === "object" ? payload.user_metadata : {};
-    const username = typeof metadata.username === "string" ? metadata.username : email?.split("@")[0] ?? "Chroma User";
-    await upsertUser({ openId: payload.sub, email, username, name: username, loginMethod: "supabase", lastSignedIn: /* @__PURE__ */ new Date() });
-    return await getUserByOpenId(payload.sub) ?? { id: 0, openId: payload.sub, username, name: username, email, loginMethod: "supabase", role: "user", status: "active", createdAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date(), lastSignedIn: /* @__PURE__ */ new Date(), lastLoginAt: /* @__PURE__ */ new Date() };
-  } catch {
-    return null;
-  }
-}
-
-// server/loader.ts
-function tokenHash(token) {
-  return createHash3("sha256").update(token).digest("hex");
-}
-function bearer2(req) {
-  const value = req.header("authorization");
-  return value?.startsWith("Bearer ") ? value.slice(7).trim() : null;
-}
-function bodyString(value, max = 4096) {
-  return typeof value === "string" && value.length > 0 && value.length <= max ? value : null;
-}
-function issueCode() {
-  return `CHRM-${randomBytes2(4).toString("hex").toUpperCase().slice(0, 6)}`;
-}
-function bad(res, message) {
-  return res.status(400).json({ error: "INVALID_REQUEST", message });
-}
-function verifyLoaderSignature(publicKey, nonce, signature) {
-  try {
-    return verify(null, Buffer.from(nonce, "utf8"), publicKey, Buffer.from(signature, "base64"));
-  } catch {
-    return false;
-  }
-}
-function registerLoaderRoutes(app2) {
-  app2.get("/api/loader/account", async (req, res) => {
-    const user = await authenticateSupabaseRequest(req);
-    if (!user || !user.id) return res.status(401).json({ error: "UNAUTHORIZED", message: "Supabase session required." });
-    const summary = await getDashboardSummary(user.id);
-    if (!summary?.user || summary.user.status !== "active") return res.status(403).json({ error: "ACCOUNT_BLOCKED", message: "Account is not active." });
-    return res.json({ user: summary.user, subscription: summary.subscription, latestSubscription: summary.latestSubscription, devices: summary.devices, latestVersion: summary.latestVersion });
-  });
-  app2.post("/api/loader/register-device", async (req, res) => {
-    const deviceName = bodyString(req.body?.deviceName, 120);
-    const publicKey = bodyString(req.body?.publicKey, 2048);
-    if (!deviceName || !publicKey) return bad(res, "deviceName and publicKey are required.");
-    const code = issueCode();
-    const expiresAt = new Date(Date.now() + 10 * 6e4);
-    const created = await createDeviceLinkCode({ codeHash: tokenHash(code), deviceName, publicKey, expiresAt });
-    if (!created) return res.status(503).json({ error: "DATABASE_UNAVAILABLE", message: "Device registration is temporarily unavailable." });
-    await createAuditLog({ action: "DEVICE_LINK_REQUESTED", metadata: { deviceName } });
-    return res.status(201).json({ code, expiresAt });
-  });
-  app2.post("/api/loader/challenge", async (req, res) => {
-    const publicKey = bodyString(req.body?.publicKey, 2048);
-    if (!publicKey) return bad(res, "publicKey is required.");
-    const device = await getDeviceByPublicKey(publicKey);
-    if (!device || device.status !== "active") return res.status(404).json({ error: "DEVICE_NOT_FOUND", message: "Device is not linked or has been revoked." });
-    const nonce = randomBytes2(32).toString("base64url");
-    const expiresAt = new Date(Date.now() + 6e4);
-    await createLoaderChallenge({ deviceId: device.id, nonce, expiresAt });
-    return res.json({ nonce, expiresAt, algorithm: "Ed25519" });
-  });
-  app2.post("/api/loader/authenticate", async (req, res) => {
-    const publicKey = bodyString(req.body?.publicKey, 2048);
-    const nonce = bodyString(req.body?.nonce, 256);
-    const signature = bodyString(req.body?.signature, 2048);
-    if (!publicKey || !nonce || !signature) return bad(res, "publicKey, nonce, and signature are required.");
-    const device = await getDeviceByPublicKey(publicKey);
-    if (!device || device.status !== "active") return res.status(401).json({ error: "INVALID_DEVICE", message: "Device is not active." });
-    const challenge = await getValidLoaderChallenge(device.id, nonce);
-    if (!challenge) return res.status(401).json({ error: "INVALID_CHALLENGE", message: "Challenge is invalid or expired." });
-    const valid = verifyLoaderSignature(publicKey, nonce, signature);
-    if (!valid || !await consumeLoaderChallenge(challenge.id)) return res.status(401).json({ error: "INVALID_SIGNATURE", message: "Signature verification failed." });
-    const summary = await getDashboardSummary(device.userId);
-    if (!summary?.user || summary.user.status !== "active") return res.status(403).json({ error: "ACCOUNT_BLOCKED", message: "Account is not active." });
-    if (!summary.subscription) return res.status(403).json({ error: "SUBSCRIPTION_REQUIRED", message: "No active subscription." });
-    const accessToken = randomBytes2(32).toString("base64url");
-    const expiresAt = new Date(Date.now() + 15 * 6e4);
-    await createLoaderSession({ userId: device.userId, deviceId: device.id, tokenHash: tokenHash(accessToken), expiresAt, lastSeenAt: /* @__PURE__ */ new Date() });
-    await createAuditLog({ userId: device.userId, action: "LOADER_AUTHENTICATED", metadata: { deviceId: device.id } });
-    return res.json({ accessToken, tokenType: "Bearer", expiresAt, deviceId: device.id, subscription: { plan: summary.subscription.plan.slug, endsAt: summary.subscription.subscription.endsAt } });
-  });
-  app2.get("/api/loader/version", async (_req, res) => {
-    const version = await getLatestVersion();
-    if (!version) return res.status(404).json({ error: "NO_RELEASE", message: "No active client version is published." });
-    return res.json({ version: version.version, minecraftVersion: version.minecraftVersion, releaseNotes: version.releaseNotes });
-  });
-  app2.get("/api/loader/subscription", async (req, res) => {
-    const token = bearer2(req);
-    if (!token) return res.status(401).json({ error: "UNAUTHORIZED", message: "Bearer session required." });
-    const session = await getLoaderSession(tokenHash(token));
-    if (!session) return res.status(401).json({ error: "INVALID_SESSION", message: "Loader session is invalid or expired." });
-    return res.json({ userId: session.user.id, deviceId: session.device.id, deviceStatus: session.device.status, validUntil: session.session.expiresAt });
-  });
-  app2.post("/api/loader/logout", async (req, res) => {
-    const token = bearer2(req);
-    if (token) await revokeLoaderSession(tokenHash(token));
-    return res.status(204).send();
-  });
-  app2.post("/api/loader/create-link-code", (_req, res) => res.status(410).json({ error: "USE_REGISTER_DEVICE", message: "Use /register-device to issue a one-time code." }));
-  app2.post("/api/loader/verify-link-code", (_req, res) => res.status(410).json({ error: "USE_DASHBOARD", message: "Link codes are approved from the authenticated dashboard." }));
-  app2.post("/api/loader/session", (_req, res) => res.status(410).json({ error: "USE_AUTHENTICATE", message: "Use /authenticate to issue a short-lived session." }));
-  app2.post("/api/loader/refresh", (_req, res) => res.status(501).json({ error: "NOT_CONFIGURED", message: "Refresh rotation will be enabled with the next Loader contract revision." }));
-  app2.get("/api/loader/download", (_req, res) => res.status(501).json({ error: "NOT_CONFIGURED", message: "Downloads require configured private storage and signed URL generation." }));
-}
-
 // server/supabaseRegistration.ts
-var supabaseUrl2 = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
+var supabaseUrl = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
 var publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "";
 function text2(value, max) {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max ? value.trim() : null;
@@ -1119,14 +1065,14 @@ function registerSupabaseRegistrationRoute(app2) {
     const serviceKey = process.env.SUPABASE_SECRET_KEY;
     if (!serviceKey || !publishableKey) return res.status(503).json({ error: "AUTH_NOT_CONFIGURED", message: "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044F \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430: \u0441\u0435\u0440\u0432\u0435\u0440\u043D\u0430\u044F \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u044F \u043D\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u0430." });
     try {
-      const createResponse = await fetch(`${supabaseUrl2}/auth/v1/admin/users`, {
+      const createResponse = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
         method: "POST",
         headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { username, name: username } })
       });
       const createdBody = await createResponse.json().catch(() => ({}));
       if (!createResponse.ok && !(createResponse.status === 422 && JSON.stringify(createdBody).toLowerCase().includes("already"))) return res.status(createResponse.status === 422 ? 409 : 502).json({ error: "REGISTRATION_FAILED", message: errorMessage(createdBody) });
-      const loginResponse = await fetch(`${supabaseUrl2}/auth/v1/token?grant_type=password`, {
+      const loginResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
         method: "POST",
         headers: { apikey: publishableKey, "Content-Type": "application/json" },
         body: JSON.stringify({ email, password })
@@ -1138,6 +1084,35 @@ function registerSupabaseRegistrationRoute(app2) {
       return res.status(503).json({ error: "AUTH_UNAVAILABLE", message: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C\u0441\u044F \u043A \u0441\u0435\u0440\u0432\u0438\u0441\u0443 \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u0438." });
     }
   });
+}
+
+// server/supabaseAuth.ts
+import { createRemoteJWKSet, jwtVerify as jwtVerify2 } from "jose";
+var supabaseUrl2 = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
+var jwksUrl = process.env.SUPABASE_JWKS_URL ?? `${supabaseUrl2}/auth/v1/.well-known/jwks.json`;
+var jwks = createRemoteJWKSet(new URL(jwksUrl));
+var adminEmails = new Set((process.env.ADMIN_EMAILS ?? "wery8090@gmail.com").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
+function bearer2(req) {
+  const value = req.header("authorization");
+  return value?.startsWith("Bearer ") ? value.slice(7).trim() : null;
+}
+async function authenticateSupabaseRequest(req) {
+  const token = bearer2(req);
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify2(token, jwks, { issuer: `${supabaseUrl2}/auth/v1`, audience: "authenticated" });
+    if (typeof payload.sub !== "string" || payload.sub.length === 0) return null;
+    const email = typeof payload.email === "string" ? payload.email : null;
+    const metadata = payload.user_metadata && typeof payload.user_metadata === "object" ? payload.user_metadata : {};
+    const username = typeof metadata.username === "string" ? metadata.username : email?.split("@")[0] ?? "Chroma User";
+    await upsertUser({ openId: payload.sub, email, username, name: username, loginMethod: "supabase", lastSignedIn: /* @__PURE__ */ new Date() });
+    const storedUser = await getUserByOpenId(payload.sub);
+    const isAllowlistedAdmin = Boolean(email && adminEmails.has(email.toLowerCase()));
+    if (storedUser) return isAllowlistedAdmin ? { ...storedUser, role: "admin", status: "active" } : storedUser;
+    return { id: 0, openId: payload.sub, username, name: username, email, loginMethod: "supabase", role: isAllowlistedAdmin ? "admin" : "user", status: "active", createdAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date(), lastSignedIn: /* @__PURE__ */ new Date(), lastLoginAt: /* @__PURE__ */ new Date() };
+  } catch {
+    return null;
+  }
 }
 
 // server/_core/context.ts
@@ -1185,12 +1160,11 @@ function createApp() {
   registerStorageProxy(app2);
   registerOAuthRoutes(app2);
   registerSupabaseRegistrationRoute(app2);
-  registerLoaderRoutes(app2);
   app2.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   return app2;
 }
 
-// .api-index-entry.ts
+// api/entry.ts
 var app = createApp();
 function handler(req, res) {
   return app(req, res);

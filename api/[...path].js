@@ -30,7 +30,6 @@ import { parse as parseCookieHeader2 } from "cookie";
 
 // server/db.ts
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
-import { createHash, randomBytes } from "node:crypto";
 import { drizzle } from "drizzle-orm/mysql2";
 
 // drizzle/schema.ts
@@ -265,15 +264,15 @@ async function getUserByOpenId(openId) {
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result[0];
 }
-async function ensureFirebaseProfile(user) {
-  await upsertUser({ openId: user.openId, email: user.email ?? null, name: user.name ?? null, username: user.username ?? user.email?.split("@")[0] ?? "Chroma User", loginMethod: "firebase", status: "active", lastSignedIn: /* @__PURE__ */ new Date() });
+async function ensureSupabaseProfile(user) {
+  await upsertUser({ openId: user.openId, email: user.email ?? null, name: user.name ?? null, username: user.username ?? user.email?.split("@")[0] ?? "Chroma User", loginMethod: "supabase", status: "active", lastSignedIn: /* @__PURE__ */ new Date() });
   const db = await getDb();
   const stored = await getUserByOpenId(user.openId);
   if (!db || !stored) return stored;
   const freePlan = await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.slug, "free"), eq(subscriptionPlans.active, true))).limit(1);
   if (freePlan[0]) {
     const existing = await db.select().from(subscriptions).where(eq(subscriptions.userId, stored.id)).limit(1);
-    if (!existing[0]) await db.insert(subscriptions).values({ userId: stored.id, planId: freePlan[0].id, status: "active", startsAt: /* @__PURE__ */ new Date(), endsAt: new Date(Date.now() + Math.max(1, freePlan[0].durationDays) * 864e5), provider: "Manual", adminNote: "Firebase registration default FREE plan" });
+    if (!existing[0]) await db.insert(subscriptions).values({ userId: stored.id, planId: freePlan[0].id, status: "active", startsAt: /* @__PURE__ */ new Date(), endsAt: new Date(Date.now() + Math.max(1, freePlan[0].durationDays) * 864e5), provider: "Manual", adminNote: "Supabase registration default FREE plan" });
   }
   return stored;
 }
@@ -368,50 +367,10 @@ async function revokeSubscription(id2) {
   const result = await db.update(subscriptions).set({ status: "cancelled" }).where(eq(subscriptions.id, id2));
   return result[0].affectedRows > 0;
 }
-function formatSubscriptionKey() {
-  const part = (size) => randomBytes(size).toString("base64url").replace(/[^A-Za-z0-9]/g, "").slice(0, size).toUpperCase();
-  return `CHROMA-${part(6)}-${part(6)}-${part(6)}`;
-}
-var keyDigest = (key) => createHash("sha256").update(key.trim().toUpperCase()).digest("hex");
-async function createSubscriptionKey(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const plan = await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.id, input.planId), eq(subscriptionPlans.active, true))).limit(1);
-  if (!plan[0] || plan[0].slug === "free") return null;
-  const plain = formatSubscriptionKey();
-  const durationDays = Math.max(1, Math.ceil((input.expiresAt.getTime() - Date.now()) / 864e5));
-  const result = await db.insert(subscriptionKeys).values({ keyHash: keyDigest(plain), planId: input.planId, durationDays, expiresAt: input.expiresAt, maxActivations: input.maxActivations, usedActivations: 0, createdByUserId: input.createdByUserId, status: "available" });
-  return { id: Number(result[0].insertId), key: plain, planId: input.planId, durationDays, maxActivations: input.maxActivations, usedActivations: 0, expiresAt: input.expiresAt };
-}
-async function redeemSubscriptionKey(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select({ key: subscriptionKeys, plan: subscriptionPlans }).from(subscriptionKeys).innerJoin(subscriptionPlans, eq(subscriptionKeys.planId, subscriptionPlans.id)).where(and(eq(subscriptionKeys.keyHash, keyDigest(input.key)), eq(subscriptionKeys.status, "available"), gt(subscriptionKeys.expiresAt, /* @__PURE__ */ new Date()), sql`${subscriptionKeys.usedActivations} < ${subscriptionKeys.maxActivations}`)).limit(1);
-  const row = rows[0];
-  if (!row) return null;
-  const now = /* @__PURE__ */ new Date();
-  const result = await db.update(subscriptionKeys).set({ usedActivations: sql`${subscriptionKeys.usedActivations} + 1`, redeemedByUserId: input.userId, redeemedAt: now }).where(and(eq(subscriptionKeys.id, row.key.id), eq(subscriptionKeys.status, "available"), sql`${subscriptionKeys.usedActivations} < ${subscriptionKeys.maxActivations}`, gt(subscriptionKeys.expiresAt, now)));
-  if (result[0].affectedRows === 0) return null;
-  const updated = await db.select({ usedActivations: subscriptionKeys.usedActivations, maxActivations: subscriptionKeys.maxActivations }).from(subscriptionKeys).where(eq(subscriptionKeys.id, row.key.id)).limit(1);
-  if (updated[0] && updated[0].usedActivations >= updated[0].maxActivations) await db.update(subscriptionKeys).set({ status: "redeemed" }).where(and(eq(subscriptionKeys.id, row.key.id), eq(subscriptionKeys.status, "available")));
-  const subscriptionId = await issueSubscription({ userId: input.userId, planId: row.plan.id, startsAt: now, endsAt: new Date(now.getTime() + row.key.durationDays * 864e5), provider: "Manual", adminNote: `Redeemed subscription key ${row.key.id}` });
-  return subscriptionId ? { subscriptionId, plan: row.plan, durationDays: row.key.durationDays, usedActivations: updated[0]?.usedActivations ?? 1, maxActivations: row.key.maxActivations } : null;
-}
-async function getAdminSubscriptionKeys() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select({ key: subscriptionKeys, plan: subscriptionPlans, user: users }).from(subscriptionKeys).innerJoin(subscriptionPlans, eq(subscriptionKeys.planId, subscriptionPlans.id)).leftJoin(users, eq(subscriptionKeys.redeemedByUserId, users.id)).orderBy(desc(subscriptionKeys.createdAt)).limit(200);
-}
 async function getUserDevices(userId) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(devices).where(eq(devices.userId, userId)).orderBy(desc(devices.createdAt));
-}
-async function createDeviceLinkCode(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const result = await db.insert(deviceLinkCodes).values(input);
-  return Number(result[0].insertId);
 }
 async function getValidDeviceLinkCode(codeHash) {
   const db = await getDb();
@@ -431,41 +390,11 @@ async function createDevice(input) {
   const result = await db.insert(devices).values({ ...input, status: "active" });
   return Number(result[0].insertId);
 }
-async function getDeviceByPublicKey(publicKey) {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select().from(devices).where(eq(devices.publicKey, publicKey)).limit(1);
-  return rows[0] ?? null;
-}
 async function countActiveDevices(userId) {
   const db = await getDb();
   if (!db) return 0;
   const rows = await db.select({ count: sql`count(*)` }).from(devices).where(and(eq(devices.userId, userId), eq(devices.status, "active")));
   return Number(rows[0]?.count ?? 0);
-}
-async function createLoaderChallenge(input) {
-  const db = await getDb();
-  if (!db) return null;
-  await db.insert(loaderChallenges).values(input);
-  return true;
-}
-async function getValidLoaderChallenge(deviceId, nonce) {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select().from(loaderChallenges).where(and(eq(loaderChallenges.deviceId, deviceId), eq(loaderChallenges.nonce, nonce), isNull(loaderChallenges.usedAt), gt(loaderChallenges.expiresAt, /* @__PURE__ */ new Date()))).limit(1);
-  return rows[0] ?? null;
-}
-async function consumeLoaderChallenge(id2) {
-  const db = await getDb();
-  if (!db) return false;
-  const result = await db.update(loaderChallenges).set({ usedAt: /* @__PURE__ */ new Date() }).where(and(eq(loaderChallenges.id, id2), isNull(loaderChallenges.usedAt)));
-  return result[0].affectedRows > 0;
-}
-async function createLoaderSession(input) {
-  const db = await getDb();
-  if (!db) return null;
-  const result = await db.insert(loaderSessions).values(input);
-  return Number(result[0].insertId);
 }
 async function revokeDevice(userId, deviceId) {
   const db = await getDb();
@@ -478,22 +407,6 @@ async function getLatestVersion() {
   if (!db) return null;
   const rows = await db.select().from(clientVersions).where(and(eq(clientVersions.isLatest, true), eq(clientVersions.active, true))).limit(1);
   return rows[0] ?? null;
-}
-async function getAvailableVersions(userId) {
-  const db = await getDb();
-  if (!db) return [];
-  const summary = await getDashboardSummary(userId);
-  const plan = summary?.subscription?.plan.slug ?? "free";
-  const allowed = plan === "premium_beta" ? ["free", "base", "premium", "premium_beta"] : plan === "premium" ? ["free", "base", "premium"] : plan === "base" ? ["free", "base"] : ["free"];
-  return db.select().from(clientVersions).where(and(eq(clientVersions.active, true), sql`${clientVersions.requiredPlan} in (${sql.join(allowed.map((value) => sql`${value}`), sql`, `)})`)).orderBy(desc(clientVersions.createdAt)).limit(50);
-}
-async function getUserVisuals(userId) {
-  const db = await getDb();
-  if (!db) return [];
-  const summary = await getDashboardSummary(userId);
-  const plan = summary?.subscription?.plan.slug ?? "free";
-  const allowed = plan === "premium_beta" ? ["free", "base", "premium", "premium_beta"] : plan === "premium" ? ["free", "base", "premium"] : plan === "base" ? ["free", "base"] : ["free"];
-  return db.select().from(visuals).where(and(eq(visuals.active, true), sql`${visuals.slug} in (${sql.join(allowed.map((value) => sql`${value}`), sql`, `)})`)).orderBy(desc(visuals.updatedAt)).limit(100);
 }
 async function createAuditLog(input) {
   const db = await getDb();
@@ -511,18 +424,6 @@ async function getAdminStats() {
     getLatestVersion()
   ]);
   return { users: Number(userCount[0]?.count ?? 0), activeSubscriptions: Number(activeSubs[0]?.count ?? 0), devices: Number(deviceCount[0]?.count ?? 0), downloads: Number(downloadCount[0]?.count ?? 0), latestVersion: latest?.version ?? "\u2014" };
-}
-async function getLoaderSession(tokenHash2) {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select({ session: loaderSessions, device: devices, user: users }).from(loaderSessions).innerJoin(devices, eq(loaderSessions.deviceId, devices.id)).innerJoin(users, eq(loaderSessions.userId, users.id)).where(and(eq(loaderSessions.tokenHash, tokenHash2), isNull(loaderSessions.revokedAt), gt(loaderSessions.expiresAt, /* @__PURE__ */ new Date()), eq(devices.status, "active"), eq(users.status, "active"))).limit(1);
-  return rows[0] ?? null;
-}
-async function revokeLoaderSession(tokenHash2) {
-  const db = await getDb();
-  if (!db) return false;
-  const result = await db.update(loaderSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq(loaderSessions.tokenHash, tokenHash2));
-  return result[0].affectedRows > 0;
 }
 async function getAdminClientVersions() {
   const db = await getDb();
@@ -925,7 +826,7 @@ function registerStorageProxy(app2) {
 }
 
 // server/routers.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash } from "node:crypto";
 import { TRPCError as TRPCError2 } from "@trpc/server";
 import { z } from "zod";
 
@@ -1002,6 +903,26 @@ var purchaseProviders = {
   Manual: new ManualProvider()
 };
 
+// server/supabaseSubscriptionApi.ts
+var SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
+var PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "sb_publishable_lA5GKwBVATAXDuZN2NTc-g_Y-Igb8Dr";
+var ENDPOINT = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/chroma-subscriptions`;
+function bearer(req) {
+  const value = req.header("authorization") ?? "";
+  return value.startsWith("Bearer ") ? value.slice(7).trim() : "";
+}
+async function callSupabaseSubscriptionApi(req, action, payload = {}) {
+  const token = bearer(req);
+  if (!token) throw new Error("UNAUTHORIZED");
+  const response = await fetch(ENDPOINT, { method: "POST", headers: { apikey: PUBLISHABLE_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ action, ...payload }) });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || (response.status === 403 ? "FORBIDDEN" : "SUBSCRIPTION_KEY_REQUEST_FAILED"));
+  return body.data;
+}
+function mapSubscriptionKeys(rows) {
+  return rows.map((row) => ({ key: { id: row.id, durationDays: row.duration_days, maxActivations: row.max_activations, usedActivations: row.used_activations, status: row.status, expiresAt: row.expires_at, createdAt: row.created_at }, plan: { id: row.plan_id, name: row.plan?.name ?? row.plan?.slug ?? "Plan", slug: row.plan?.slug ?? "" }, user: row.redeemed_by ? { id: row.redeemed_by, email: null } : null }));
+}
+
 // server/routers.ts
 var subscriptionInput = z.object({
   userId: z.number().int().positive(),
@@ -1014,7 +935,7 @@ var subscriptionInput = z.object({
 var appRouter = router({
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
-    syncProfile: protectedProcedure.mutation(({ ctx }) => ensureFirebaseProfile({ openId: ctx.user.openId, email: ctx.user.email, name: ctx.user.name, username: ctx.user.username })),
+    syncProfile: protectedProcedure.mutation(({ ctx }) => ensureSupabaseProfile({ openId: ctx.user.openId, email: ctx.user.email, name: ctx.user.name, username: ctx.user.username })),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -1025,16 +946,14 @@ var appRouter = router({
     list: publicProcedure.query(() => getPublicPlans()),
     purchaseOffers: publicProcedure.query(() => ({ offers: PURCHASE_OFFERS, telegramUrl: TELEGRAM_SELLER_URL }))
   }),
-  dashboard: router({ summary: protectedProcedure.query(({ ctx }) => getDashboardSummary(ctx.user.id)), redeemKey: protectedProcedure.input(z.object({ key: z.string().trim().toUpperCase().regex(/^CHROMA-[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}$/) })).mutation(async ({ ctx, input }) => {
-    const result = await redeemSubscriptionKey({ key: input.key, userId: ctx.user.id });
-    if (!result) throw new TRPCError2({ code: "BAD_REQUEST", message: "\u041A\u043B\u044E\u0447 \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u0435\u043D, \u0438\u0441\u0447\u0435\u0440\u043F\u0430\u043B \u043B\u0438\u043C\u0438\u0442 \u0430\u043A\u0442\u0438\u0432\u0430\u0446\u0438\u0439, \u0438\u0441\u0442\u0451\u043A \u0438\u043B\u0438 \u043E\u0442\u043E\u0437\u0432\u0430\u043D." });
-    await createAuditLog({ userId: ctx.user.id, action: "SUBSCRIPTION_KEY_REDEEMED", metadata: { subscriptionId: result.subscriptionId, plan: result.plan.slug, durationDays: result.durationDays, usedActivations: result.usedActivations, maxActivations: result.maxActivations } });
-    return { success: true, plan: result.plan.name, durationDays: result.durationDays, usedActivations: result.usedActivations, maxActivations: result.maxActivations };
+  dashboard: router({ summary: protectedProcedure.query(({ ctx }) => getDashboardSummary(ctx.user.id)), redeemKey: protectedProcedure.input(z.object({ key: z.string().trim().toUpperCase().regex(/^CHROMA-[A-Z0-9]{12}-[A-Z0-9]{12}-[A-Z0-9]{12}$/) })).mutation(async ({ ctx, input }) => {
+    const result = await callSupabaseSubscriptionApi(ctx.req, "redeem_key", { key: input.key });
+    return { success: true, plan: result?.plan?.name ?? result?.plan?.slug ?? "Subscription", durationDays: result?.duration_days ?? 0, endsAt: result?.ends_at ?? null };
   }) }),
   devices: router({
     list: protectedProcedure.query(({ ctx }) => getUserDevices(ctx.user.id)),
     verifyLinkCode: protectedProcedure.input(z.object({ code: z.string().trim().toUpperCase().regex(/^CHRM-[A-Z0-9]{6}$/) })).mutation(async ({ ctx, input }) => {
-      const codeHash = createHash2("sha256").update(input.code).digest("hex");
+      const codeHash = createHash("sha256").update(input.code).digest("hex");
       const pending = await getValidDeviceLinkCode(codeHash);
       if (!pending) throw new TRPCError2({ code: "NOT_FOUND", message: "Invalid or expired link code" });
       const summary = await getDashboardSummary(ctx.user.id);
@@ -1066,7 +985,7 @@ var appRouter = router({
     stats: adminProcedure.query(() => getAdminStats()),
     plans: adminProcedure.query(() => getPublicPlans()),
     subscriptionData: adminProcedure.query(() => getAdminSubscriptionData()),
-    subscriptionKeys: adminProcedure.query(() => getAdminSubscriptionKeys()),
+    subscriptionKeys: adminProcedure.query(async ({ ctx }) => mapSubscriptionKeys(await callSupabaseSubscriptionApi(ctx.req, "admin_list_keys"))),
     clientVersions: adminProcedure.query(() => getAdminClientVersions()),
     visuals: adminProcedure.query(() => getAdminVisuals()),
     publishClientVersion: adminProcedure.input(z.object({ version: z.string().trim().min(1).max(32), minecraftVersion: z.string().trim().min(1).max(32), fileKey: z.string().trim().url().max(512), fileName: z.string().trim().min(1).max(160), releaseNotes: z.string().trim().max(5e3).default(""), requiredPlan: z.enum(["free", "base", "premium", "premium_beta"]).default("free"), makeLatest: z.boolean().default(true) })).mutation(async ({ ctx, input }) => {
@@ -1095,10 +1014,9 @@ var appRouter = router({
     }),
     createSubscriptionKey: adminProcedure.input(z.object({ planId: z.number().int().positive(), maxActivations: z.number().int().min(1).max(1e5), expiresAt: z.coerce.date() })).mutation(async ({ ctx, input }) => {
       if (input.expiresAt <= /* @__PURE__ */ new Date()) throw new TRPCError2({ code: "BAD_REQUEST", message: "\u0414\u0430\u0442\u0430 \u043E\u043A\u043E\u043D\u0447\u0430\u043D\u0438\u044F \u0434\u043E\u043B\u0436\u043D\u0430 \u0431\u044B\u0442\u044C \u0432 \u0431\u0443\u0434\u0443\u0449\u0435\u043C." });
-      const result = await createSubscriptionKey({ ...input, createdByUserId: ctx.user.id });
-      if (!result) throw new TRPCError2({ code: "BAD_REQUEST", message: "\u041D\u0435\u043B\u044C\u0437\u044F \u0441\u043E\u0437\u0434\u0430\u0442\u044C \u043A\u043B\u044E\u0447 \u0434\u043B\u044F FREE \u0438\u043B\u0438 \u043D\u0435\u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0433\u043E \u0442\u0430\u0440\u0438\u0444\u0430." });
-      await createAuditLog({ userId: ctx.user.id, action: "ADMIN_SUBSCRIPTION_KEY_CREATED", metadata: { keyId: result.id, planId: input.planId, maxActivations: input.maxActivations, expiresAt: input.expiresAt.toISOString() } });
-      return result;
+      const planSlug = { 1: "free", 2: "base", 3: "premium", 4: "premium_beta" }[input.planId];
+      if (!planSlug) throw new TRPCError2({ code: "BAD_REQUEST", message: "\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0442\u0430\u0440\u0438\u0444 Supabase." });
+      return await callSupabaseSubscriptionApi(ctx.req, "admin_create_key", { plan_slug: planSlug, max_activations: input.maxActivations, expires_at: input.expiresAt.toISOString() });
     }),
     issueSubscription: adminProcedure.input(subscriptionInput).mutation(async ({ ctx, input }) => {
       if (input.endsAt <= input.startsAt) throw new TRPCError2({ code: "BAD_REQUEST", message: "End date must be after start date" });
@@ -1129,152 +1047,8 @@ var appRouter = router({
   })
 });
 
-// server/loader.ts
-import { createHash as createHash3, randomBytes as randomBytes2, verify } from "node:crypto";
-
-// server/supabaseAuth.ts
-import { createRemoteJWKSet, jwtVerify as jwtVerify2 } from "jose";
-var supabaseUrl = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
-var jwksUrl = process.env.SUPABASE_JWKS_URL ?? `${supabaseUrl}/auth/v1/.well-known/jwks.json`;
-var jwks = createRemoteJWKSet(new URL(jwksUrl));
-var adminEmails = new Set((process.env.ADMIN_EMAILS ?? "wery8090@gmail.com").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
-function bearer(req) {
-  const value = req.header("authorization");
-  return value?.startsWith("Bearer ") ? value.slice(7).trim() : null;
-}
-async function authenticateSupabaseRequest(req) {
-  const token = bearer(req);
-  if (!token) return null;
-  try {
-    const { payload } = await jwtVerify2(token, jwks, { issuer: `${supabaseUrl}/auth/v1`, audience: "authenticated" });
-    if (typeof payload.sub !== "string" || payload.sub.length === 0) return null;
-    const email = typeof payload.email === "string" ? payload.email : null;
-    const metadata = payload.user_metadata && typeof payload.user_metadata === "object" ? payload.user_metadata : {};
-    const username = typeof metadata.username === "string" ? metadata.username : email?.split("@")[0] ?? "Chroma User";
-    await upsertUser({ openId: payload.sub, email, username, name: username, loginMethod: "supabase", lastSignedIn: /* @__PURE__ */ new Date() });
-    const storedUser = await getUserByOpenId(payload.sub);
-    const isAllowlistedAdmin = Boolean(email && adminEmails.has(email.toLowerCase()));
-    if (storedUser) return isAllowlistedAdmin ? { ...storedUser, role: "admin", status: "active" } : storedUser;
-    return { id: 0, openId: payload.sub, username, name: username, email, loginMethod: "supabase", role: isAllowlistedAdmin ? "admin" : "user", status: "active", createdAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date(), lastSignedIn: /* @__PURE__ */ new Date(), lastLoginAt: /* @__PURE__ */ new Date() };
-  } catch {
-    return null;
-  }
-}
-
-// server/loader.ts
-function tokenHash(token) {
-  return createHash3("sha256").update(token).digest("hex");
-}
-function bearer2(req) {
-  const value = req.header("authorization");
-  return value?.startsWith("Bearer ") ? value.slice(7).trim() : null;
-}
-function bodyString(value, max = 4096) {
-  return typeof value === "string" && value.length > 0 && value.length <= max ? value : null;
-}
-function issueCode() {
-  return `CHRM-${randomBytes2(4).toString("hex").toUpperCase().slice(0, 6)}`;
-}
-function bad(res, message) {
-  return res.status(400).json({ error: "INVALID_REQUEST", message });
-}
-function verifyLoaderSignature(publicKey, nonce, signature) {
-  try {
-    return verify(null, Buffer.from(nonce, "utf8"), publicKey, Buffer.from(signature, "base64"));
-  } catch {
-    return false;
-  }
-}
-function registerLoaderRoutes(app2) {
-  app2.get("/api/loader/health", (_req, res) => res.json({ ok: true, service: "chroma-api", time: (/* @__PURE__ */ new Date()).toISOString() }));
-  app2.get("/api/loader/account", async (req, res) => {
-    const user = await authenticateSupabaseRequest(req);
-    if (!user) return res.status(401).json({ error: "UNAUTHORIZED", message: "Supabase session required." });
-    if (!user.id) return res.json({ user, subscription: null, latestSubscription: null, devices: [], latestVersion: null });
-    const summary = await getDashboardSummary(user.id);
-    if (!summary?.user || summary.user.status !== "active") return res.status(403).json({ error: "ACCOUNT_BLOCKED", message: "Account is not active." });
-    return res.json({ user: summary.user, subscription: summary.subscription, latestSubscription: summary.latestSubscription, devices: summary.devices, latestVersion: summary.latestVersion });
-  });
-  app2.post("/api/loader/register-device", async (req, res) => {
-    const deviceName = bodyString(req.body?.deviceName, 120);
-    const publicKey = bodyString(req.body?.publicKey, 2048);
-    if (!deviceName || !publicKey) return bad(res, "deviceName and publicKey are required.");
-    const code = issueCode();
-    const expiresAt = new Date(Date.now() + 10 * 6e4);
-    const created = await createDeviceLinkCode({ codeHash: tokenHash(code), deviceName, publicKey, expiresAt });
-    if (!created) return res.status(503).json({ error: "DATABASE_UNAVAILABLE", message: "Device registration is temporarily unavailable." });
-    await createAuditLog({ action: "DEVICE_LINK_REQUESTED", metadata: { deviceName } });
-    return res.status(201).json({ code, expiresAt });
-  });
-  app2.post("/api/loader/challenge", async (req, res) => {
-    const publicKey = bodyString(req.body?.publicKey, 2048);
-    if (!publicKey) return bad(res, "publicKey is required.");
-    const device = await getDeviceByPublicKey(publicKey);
-    if (!device || device.status !== "active") return res.status(404).json({ error: "DEVICE_NOT_FOUND", message: "Device is not linked or has been revoked." });
-    const nonce = randomBytes2(32).toString("base64url");
-    const expiresAt = new Date(Date.now() + 6e4);
-    await createLoaderChallenge({ deviceId: device.id, nonce, expiresAt });
-    return res.json({ nonce, expiresAt, algorithm: "Ed25519" });
-  });
-  app2.post("/api/loader/authenticate", async (req, res) => {
-    const publicKey = bodyString(req.body?.publicKey, 2048);
-    const nonce = bodyString(req.body?.nonce, 256);
-    const signature = bodyString(req.body?.signature, 2048);
-    if (!publicKey || !nonce || !signature) return bad(res, "publicKey, nonce, and signature are required.");
-    const device = await getDeviceByPublicKey(publicKey);
-    if (!device || device.status !== "active") return res.status(401).json({ error: "INVALID_DEVICE", message: "Device is not active." });
-    const challenge = await getValidLoaderChallenge(device.id, nonce);
-    if (!challenge) return res.status(401).json({ error: "INVALID_CHALLENGE", message: "Challenge is invalid or expired." });
-    const valid = verifyLoaderSignature(publicKey, nonce, signature);
-    if (!valid || !await consumeLoaderChallenge(challenge.id)) return res.status(401).json({ error: "INVALID_SIGNATURE", message: "Signature verification failed." });
-    const summary = await getDashboardSummary(device.userId);
-    if (!summary?.user || summary.user.status !== "active") return res.status(403).json({ error: "ACCOUNT_BLOCKED", message: "Account is not active." });
-    if (!summary.subscription) return res.status(403).json({ error: "SUBSCRIPTION_REQUIRED", message: "No active subscription." });
-    const accessToken = randomBytes2(32).toString("base64url");
-    const expiresAt = new Date(Date.now() + 15 * 6e4);
-    await createLoaderSession({ userId: device.userId, deviceId: device.id, tokenHash: tokenHash(accessToken), expiresAt, lastSeenAt: /* @__PURE__ */ new Date() });
-    await createAuditLog({ userId: device.userId, action: "LOADER_AUTHENTICATED", metadata: { deviceId: device.id } });
-    return res.json({ accessToken, tokenType: "Bearer", expiresAt, deviceId: device.id, subscription: { plan: summary.subscription.plan.slug, endsAt: summary.subscription.subscription.endsAt } });
-  });
-  app2.get("/api/loader/version", async (_req, res) => {
-    const version = await getLatestVersion();
-    if (!version) return res.status(404).json({ error: "NO_RELEASE", message: "No active client version is published." });
-    return res.json({ version: version.version, minecraftVersion: version.minecraftVersion, fileName: version.fileName, downloadUrl: version.fileKey, releaseNotes: version.releaseNotes });
-  });
-  app2.get("/api/loader/visuals", async (req, res) => {
-    const user = await authenticateSupabaseRequest(req);
-    if (!user?.id) return res.status(401).json({ error: "AUTH_ERROR", message: "Session expired." });
-    const visuals2 = await getUserVisuals(user.id);
-    return res.json({ visuals: visuals2 });
-  });
-  app2.get("/api/loader/versions", async (req, res) => {
-    const user = await authenticateSupabaseRequest(req);
-    if (!user?.id) return res.status(401).json({ error: "AUTH_ERROR", message: "Session expired." });
-    const summary = await getDashboardSummary(user.id);
-    if (!summary?.user || summary.user.status !== "active") return res.status(403).json({ error: "ACCOUNT_BLOCKED", message: "Account is not active." });
-    return res.json({ versions: await getAvailableVersions(user.id) });
-  });
-  app2.get("/api/loader/subscription", async (req, res) => {
-    const token = bearer2(req);
-    if (!token) return res.status(401).json({ error: "UNAUTHORIZED", message: "Bearer session required." });
-    const session = await getLoaderSession(tokenHash(token));
-    if (!session) return res.status(401).json({ error: "INVALID_SESSION", message: "Loader session is invalid or expired." });
-    return res.json({ userId: session.user.id, deviceId: session.device.id, deviceStatus: session.device.status, validUntil: session.session.expiresAt });
-  });
-  app2.post("/api/loader/logout", async (req, res) => {
-    const token = bearer2(req);
-    if (token) await revokeLoaderSession(tokenHash(token));
-    return res.status(204).send();
-  });
-  app2.post("/api/loader/create-link-code", (_req, res) => res.status(410).json({ error: "USE_REGISTER_DEVICE", message: "Use /register-device to issue a one-time code." }));
-  app2.post("/api/loader/verify-link-code", (_req, res) => res.status(410).json({ error: "USE_DASHBOARD", message: "Link codes are approved from the authenticated dashboard." }));
-  app2.post("/api/loader/session", (_req, res) => res.status(410).json({ error: "USE_AUTHENTICATE", message: "Use /authenticate to issue a short-lived session." }));
-  app2.post("/api/loader/refresh", (_req, res) => res.status(501).json({ error: "NOT_CONFIGURED", message: "Refresh rotation will be enabled with the next Loader contract revision." }));
-  app2.get("/api/loader/download", (_req, res) => res.status(501).json({ error: "NOT_CONFIGURED", message: "Downloads require configured private storage and signed URL generation." }));
-}
-
 // server/supabaseRegistration.ts
-var supabaseUrl2 = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
+var supabaseUrl = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
 var publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "";
 function text2(value, max) {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max ? value.trim() : null;
@@ -1291,14 +1065,14 @@ function registerSupabaseRegistrationRoute(app2) {
     const serviceKey = process.env.SUPABASE_SECRET_KEY;
     if (!serviceKey || !publishableKey) return res.status(503).json({ error: "AUTH_NOT_CONFIGURED", message: "\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044F \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430: \u0441\u0435\u0440\u0432\u0435\u0440\u043D\u0430\u044F \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u044F \u043D\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D\u0430." });
     try {
-      const createResponse = await fetch(`${supabaseUrl2}/auth/v1/admin/users`, {
+      const createResponse = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
         method: "POST",
         headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { username, name: username } })
       });
       const createdBody = await createResponse.json().catch(() => ({}));
       if (!createResponse.ok && !(createResponse.status === 422 && JSON.stringify(createdBody).toLowerCase().includes("already"))) return res.status(createResponse.status === 422 ? 409 : 502).json({ error: "REGISTRATION_FAILED", message: errorMessage(createdBody) });
-      const loginResponse = await fetch(`${supabaseUrl2}/auth/v1/token?grant_type=password`, {
+      const loginResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
         method: "POST",
         headers: { apikey: publishableKey, "Content-Type": "application/json" },
         body: JSON.stringify({ email, password })
@@ -1312,31 +1086,30 @@ function registerSupabaseRegistrationRoute(app2) {
   });
 }
 
-// server/firebaseAuth.ts
-import { cert, getApps, initializeApp } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
-function bearer3(req) {
+// server/supabaseAuth.ts
+import { createRemoteJWKSet, jwtVerify as jwtVerify2 } from "jose";
+var supabaseUrl2 = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
+var jwksUrl = process.env.SUPABASE_JWKS_URL ?? `${supabaseUrl2}/auth/v1/.well-known/jwks.json`;
+var jwks = createRemoteJWKSet(new URL(jwksUrl));
+var adminEmails = new Set((process.env.ADMIN_EMAILS ?? "wery8090@gmail.com").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
+function bearer2(req) {
   const value = req.header("authorization");
   return value?.startsWith("Bearer ") ? value.slice(7).trim() : null;
 }
-function adminAuth() {
-  const projectId = process.env.FIREBASE_PROJECT_ID ?? process.env.VITE_FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
-  if (!projectId || !clientEmail || !privateKey) return null;
-  const app2 = getApps()[0] ?? initializeApp({ credential: cert({ projectId, clientEmail, privateKey }) });
-  return getAuth(app2);
-}
-async function authenticateFirebaseRequest(req) {
-  const token = bearer3(req);
-  const auth = adminAuth();
-  if (!token || !auth) return null;
+async function authenticateSupabaseRequest(req) {
+  const token = bearer2(req);
+  if (!token) return null;
   try {
-    const decoded = await auth.verifyIdToken(token);
-    if (!decoded.uid) return null;
-    const email = decoded.email ?? null;
-    const username = typeof decoded.username === "string" ? decoded.username : email?.split("@")[0] ?? "Chroma User";
-    return await ensureFirebaseProfile({ openId: decoded.uid, email, username, name: decoded.name ?? username }) ?? null;
+    const { payload } = await jwtVerify2(token, jwks, { issuer: `${supabaseUrl2}/auth/v1`, audience: "authenticated" });
+    if (typeof payload.sub !== "string" || payload.sub.length === 0) return null;
+    const email = typeof payload.email === "string" ? payload.email : null;
+    const metadata = payload.user_metadata && typeof payload.user_metadata === "object" ? payload.user_metadata : {};
+    const username = typeof metadata.username === "string" ? metadata.username : email?.split("@")[0] ?? "Chroma User";
+    await upsertUser({ openId: payload.sub, email, username, name: username, loginMethod: "supabase", lastSignedIn: /* @__PURE__ */ new Date() });
+    const storedUser = await getUserByOpenId(payload.sub);
+    const isAllowlistedAdmin = Boolean(email && adminEmails.has(email.toLowerCase()));
+    if (storedUser) return isAllowlistedAdmin ? { ...storedUser, role: "admin", status: "active" } : storedUser;
+    return { id: 0, openId: payload.sub, username, name: username, email, loginMethod: "supabase", role: isAllowlistedAdmin ? "admin" : "user", status: "active", createdAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date(), lastSignedIn: /* @__PURE__ */ new Date(), lastLoginAt: /* @__PURE__ */ new Date() };
   } catch {
     return null;
   }
@@ -1349,13 +1122,6 @@ async function createContext(opts) {
     user = await sdk.authenticateRequest(opts.req);
   } catch (error) {
     user = null;
-  }
-  if (!user) {
-    try {
-      user = await authenticateFirebaseRequest(opts.req);
-    } catch {
-      user = null;
-    }
   }
   if (!user) {
     try {
@@ -1394,7 +1160,6 @@ function createApp() {
   registerStorageProxy(app2);
   registerOAuthRoutes(app2);
   registerSupabaseRegistrationRoute(app2);
-  registerLoaderRoutes(app2);
   app2.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   return app2;
 }
