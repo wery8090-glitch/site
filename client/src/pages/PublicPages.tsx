@@ -27,39 +27,6 @@ export function DownloadPage() { return <PublicPage eyebrow="Get Chroma" title="
 
 export function StatusPage() { return <PublicPage eyebrow="Service health" title="Everything important, visible." description="A simple status surface for the website, account, API, and future Loader services."><div className="grid gap-3">{[["Website", "Operational"], ["Account & OAuth", "Operational"], ["Database", "Operational"], ["Loader API", "Beta"]].map(([name, status], index) => <div key={name} className="surface flex items-center justify-between p-5"><div className="flex items-center gap-3"><span className={`h-2.5 w-2.5 rounded-full ${index === 3 ? "bg-amber-300" : "bg-primary"}`} /><span className="text-sm font-medium">{name}</span></div><span className={`text-xs ${index === 3 ? "text-amber-200" : "text-primary"}`}>{status}</span></div>)}</div></PublicPage>; }
 
-export function LoaderHandoffPage() {
-  const { supabaseUser, loading, isAuthenticated } = useAuth();
-  const [status, setStatus] = useState("Проверяем аккаунт…");
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const port = params.get("port");
-    const state = params.get("state");
-    if (!port || !state) { setError("Некорректная ссылка Loader."); return; }
-    if (loading) return;
-    if (!isAuthenticated || !supabaseUser) { setStatus("Войдите в аккаунт, чтобы открыть Loader."); return; }
-    let cancelled = false;
-    void (async () => {
-      try {
-        setStatus("Передаём безопасную сессию в Loader…");
-        const { data: sessionData } = await supabase.auth.getSession();
-        const idToken = sessionData.session?.access_token;
-        if (!idToken) throw new Error("Supabase session недоступна.");
-        const hosts = ["localhost", "127.0.0.1"];
-        let delivered = false;
-        for (const host of hosts) {
-          try { await fetch(`http://${host}:${encodeURIComponent(port)}/google-callback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, state, uid: supabaseUser.id, email: supabaseUser.email ?? "", displayName: String(supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.username ?? ""), idToken }) }); delivered = true; break; } catch { /* try the other loopback address */ }
-        }
-        if (!delivered) throw new Error("Loader не принимает callback. Запустите Loader заново.");
-        if (!cancelled) setStatus("Готово. Вернитесь в окно CHROMA Loader.");
-      } catch (reason) { if (!cancelled) { setError(reason instanceof Error ? reason.message : "Не удалось передать сессию."); setStatus(""); } }
-    })();
-    return () => { cancelled = true; };
-  }, [supabaseUser, isAuthenticated, loading]);
-  const next = `/loader-handoff${window.location.search}`;
-  return <PublicPage eyebrow="CHROMA Loader" title="Открытие Loader" description="Эта страница передаёт только короткоживущий Supabase access token через локальный защищённый callback. Пароль и токены не помещаются в URL."><div className="surface mx-auto max-w-lg p-7 text-center"><p className="text-sm text-muted-foreground">{status}</p>{error && <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[.06] p-3 text-sm text-red-100">{error}</p>}{!loading && !isAuthenticated && <div className="mt-6 flex justify-center gap-3"><Link href={`/login?next=${encodeURIComponent(next)}`} className="inline-flex h-10 items-center rounded-xl bg-primary px-4 text-sm font-bold text-[#10150c]">Войти</Link><Link href={`/register?next=${encodeURIComponent(next)}`} className="inline-flex h-10 items-center rounded-xl border border-white/10 px-4 text-sm font-semibold">Регистрация</Link></div>}</div></PublicPage>;
-}
-
 export function LegalPage({ type }: { type: "terms" | "privacy" }) { const privacy = type === "privacy"; return <PublicPage eyebrow={privacy ? "Legal / Privacy" : "Legal / Terms"} title={privacy ? "Privacy, by design." : "Terms of use."} description={privacy ? "A concise placeholder policy surface for the product foundation. Replace with reviewed legal copy before launch." : "A concise placeholder terms surface for the product foundation. Replace with reviewed legal copy before launch."}><div className="prose prose-invert max-w-3xl prose-headings:tracking-tight prose-p:text-muted-foreground"><h2>{privacy ? "Data we need" : "Using Chroma"}</h2><p>{privacy ? "Chroma should collect only the account, device, subscription, and operational data needed to provide the service. Device binding stores a public key; the private key remains on the Loader device." : "Use the service lawfully and keep your account credentials secure. Access to closed client files is personal and may be revoked when a device or subscription is disabled."}</p><h2>{privacy ? "Security posture" : "Availability"}</h2><p>{privacy ? "Passwords and secrets must not be stored in plaintext. Audit records should avoid tokens and sensitive secrets. Production traffic should use HTTPS and secure cookies." : "The website and future Loader API may change while the product is being developed. Any payment provider terms must be shown at checkout once live billing is enabled."}</p><h2>Contact</h2><p>For launch-ready legal text, replace this draft with reviewed policy content and the correct operator contact details.</p></div></PublicPage>; }
 
 function withAuthTimeout<T>(promise: Promise<T>, timeoutMs = 15000) {
