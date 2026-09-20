@@ -129,3 +129,55 @@ button:active, a:active { transform: scale(.975); }
 @keyframes orbit-drift { from { transform: rotate(-17deg) translate(0); } to { transform: rotate(-13deg) translate(-18px, 10px); } }
 @keyframes answer-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pulse-dot { 0%,100% { box-shadow: 0 0 0 0 rgba(184,246,65,.5); } 50% { box-shadow: 0 0 0 8px rgba(184,246,65,0); } }
+
+
+/* CHROMA SOURCE POLISH — detail pass, original composition preserved */
+:root {
+  --primary: #baff36;
+  --primary-foreground: #10150c;
+  --border: rgba(190, 226, 170, .14);
+  --muted-foreground: #899583;
+  --radius: 1rem;
+}
+
+body { background-image: radial-gradient(circle at 6% -8%, rgba(186,255,54,.09), transparent 27rem), radial-gradient(circle at 96% 20%, rgba(76,125,71,.12), transparent 32rem), linear-gradient(115deg, rgba(255,255,255,.012) 1px, transparent 1px); background-size: auto, auto, 10px 10px; }
+h1, h2, h3 { text-wrap: balance; }
+
+.surface { background: linear-gradient(145deg, rgba(21,30,23,.9), rgba(12,16,14,.9)); border: 1px solid var(--border); border-radius: 1.15rem; box-shadow: 0 20px 65px rgba(0,0,0,.18), inset 0 1px rgba(255,255,255,.035); }
+.surface:hover { border-color: rgba(186,255,54,.24); }
+
+header.relative.z-40, .site-header { box-shadow: 0 12px 40px rgba(0,0,0,.12); }
+header.relative.z-40 nav a, .site-header nav a { white-space: nowrap; }
+
+.hero-title { text-wrap: balance; }
+.hero-lede { max-width: 34rem; }
+
+.feature-card, .pricing-card, .faq-row { box-shadow: 0 16px 45px rgba(0,0,0,.14), inset 0 1px rgba(255,255,255,.025); }
+.feature-card, .pricing-card { min-height: 100%; }
+.feature-card h3, .pricing-card h3 { text-wrap: balance; }
+
+button, a { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+input, textarea, select { color: var(--foreground); }
+input::placeholder, textarea::placeholder { color: rgba(137,149,131,.66); }
+
+.product-window, .performance-card, .glass { box-shadow: 0 32px 90px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.04); }
+.product-window { border-color: rgba(186,255,54,.2); }
+.clickgui-panel { box-shadow: 0 28px 80px rgba(0,0,0,.52), 0 0 0 1px rgba(186,255,54,.06); }
+
+/* Dashboard detail pass */
+.dashboard-shell { background-image: radial-gradient(circle at 82% 0%, rgba(186,255,54,.06), transparent 26rem), linear-gradient(115deg, rgba(255,255,255,.012) 1px, transparent 1px); background-size: auto, 12px 12px; }
+.dashboard-shell .surface, .dashboard-shell .glass { box-shadow: 0 18px 55px rgba(0,0,0,.2), inset 0 1px rgba(255,255,255,.035); }
+.dashboard-shell table tbody tr:last-child { border-bottom: 0; }
+.dashboard-shell table tbody tr:hover { background: rgba(186,255,54,.035); }
+.dashboard-shell input { transition: border-color 180ms var(--ease-out), background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out); }
+.dashboard-shell input:focus { border-color: rgba(186,255,54,.58); background: rgba(186,255,54,.045); box-shadow: 0 0 0 3px rgba(186,255,54,.08); }
+
+@media (max-width: 767px) {
+  .hero-title { line-height: .94; }
+  .product-window { transform: none; }
+  .container { padding-left: 1rem; padding-right: 1rem; }
+  .dashboard-shell .container { padding-left: 1rem; padding-right: 1rem; }
+}
+
+h1, h2, h3, h4 { font-family: "Space Grotesk", "DM Sans", ui-sans-serif, system-ui, sans-serif; }

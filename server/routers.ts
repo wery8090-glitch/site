@@ -4,7 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { consumeDeviceLinkCode, countActiveDevices, createAuditLog, createDevice, createSubscriptionKey, createVisual, ensureSupabaseProfile, extendSubscription, getAdminClientVersions, getAdminStats, getAdminSubscriptionData, getAdminSubscriptionKeys, getAdminVisuals, getDashboardSummary, getLatestVersion, getPlanBySlug, getPublicPlans, getUserDevices, getValidDeviceLinkCode, issueSubscription, publishClientVersion, redeemSubscriptionKey, revokeDevice, revokeSubscription, setClientVersionState, setVisualState, updateSubscription } from "./db";
+import { consumeDeviceLinkCode, countActiveDevices, createAuditLog, createDevice, createSubscriptionKey, createVisual, ensureSupabaseProfile, extendSubscription, getAdminAuditLogs, getAdminClientVersions, getAdminDevices, getAdminPayments, getAdminStats, getAdminSubscriptionData, getAdminSubscriptionKeys, getAdminUsers, getAdminVisuals, getAvailableVersions, getDashboardSummary, getLatestVersion, getPlanBySlug, getPublicPlans, getUserDevices, getUserVisuals, getValidDeviceLinkCode, issueSubscription, publishClientVersion, redeemSubscriptionKey, revokeDevice, revokeSubscription, setClientVersionState, setVisualState, updateSubscription } from "./db";
 import { PURCHASE_OFFERS, TELEGRAM_SELLER_URL } from "../shared/purchase";
 import { callSupabaseSubscriptionApi, mapSubscriptionKeys } from "./supabaseSubscriptionApi";
 
@@ -29,7 +29,7 @@ export const appRouter = router({
     purchaseOffers: publicProcedure.query(() => ({ offers: PURCHASE_OFFERS, telegramUrl: TELEGRAM_SELLER_URL })),
   }),
 
-  dashboard: router({ summary: protectedProcedure.query(({ ctx }) => getDashboardSummary(ctx.user.id)), redeemKey: protectedProcedure.input(z.object({ key: z.string().trim().toUpperCase().regex(/^CHROMA-[A-Z0-9]{12}-[A-Z0-9]{12}-[A-Z0-9]{12}$/) })).mutation(async ({ ctx, input }) => { const result = await callSupabaseSubscriptionApi(ctx.req, "redeem_key", { key: input.key }) as any; return { success: true, plan: result?.plan?.name ?? result?.plan?.slug ?? "Subscription", durationDays: result?.duration_days ?? 0, endsAt: result?.ends_at ?? null } as const; }) }),
+  dashboard: router({ summary: protectedProcedure.query(({ ctx }) => getDashboardSummary(ctx.user.id)), visuals: protectedProcedure.query(({ ctx }) => getUserVisuals(ctx.user.id)), versions: protectedProcedure.query(({ ctx }) => getAvailableVersions(ctx.user.id)), redeemKey: protectedProcedure.input(z.object({ key: z.string().trim().toUpperCase().regex(/^CHROMA-[A-Z0-9]{12}-[A-Z0-9]{12}-[A-Z0-9]{12}$/) })).mutation(async ({ ctx, input }) => { const result = await callSupabaseSubscriptionApi(ctx.req, "redeem_key", { key: input.key }) as any; return { success: true, plan: result?.plan?.name ?? result?.plan?.slug ?? "Subscription", durationDays: result?.duration_days ?? 0, endsAt: result?.ends_at ?? null } as const; }) }),
 
   devices: router({
     list: protectedProcedure.query(({ ctx }) => getUserDevices(ctx.user.id)),
@@ -56,6 +56,10 @@ export const appRouter = router({
 
   admin: router({
     stats: adminProcedure.query(() => getAdminStats()),
+    users: adminProcedure.query(() => getAdminUsers()),
+    devices: adminProcedure.query(() => getAdminDevices()),
+    payments: adminProcedure.query(() => getAdminPayments()),
+    auditLogs: adminProcedure.query(() => getAdminAuditLogs()),
     plans: adminProcedure.query(() => getPublicPlans()),
     subscriptionData: adminProcedure.query(() => getAdminSubscriptionData()),
     subscriptionKeys: adminProcedure.query(async ({ ctx }) => mapSubscriptionKeys(await callSupabaseSubscriptionApi(ctx.req, "admin_list_keys") as any[])),

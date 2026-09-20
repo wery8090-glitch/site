@@ -10,6 +10,7 @@ import {
   InsertUser,
   loaderChallenges,
   loaderSessions,
+  payments,
   subscriptionPlans,
   subscriptionKeys,
   subscriptions,
@@ -335,6 +336,31 @@ export async function getAdminStats() {
     getLatestVersion(),
   ]);
   return { users: Number(userCount[0]?.count ?? 0), activeSubscriptions: Number(activeSubs[0]?.count ?? 0), devices: Number(deviceCount[0]?.count ?? 0), downloads: Number(downloadCount[0]?.count ?? 0), latestVersion: latest?.version ?? "—" };
+}
+
+export async function getAdminUsers() {
+  const db = await getDb();
+  if (!db) return [];
+  await syncSupabaseUsers();
+  return db.select({ id: users.id, openId: users.openId, username: users.username, name: users.name, email: users.email, role: users.role, status: users.status, createdAt: users.createdAt, lastSignedIn: users.lastSignedIn, lastLoginAt: users.lastLoginAt }).from(users).orderBy(desc(users.createdAt)).limit(500);
+}
+
+export async function getAdminDevices() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ device: devices, user: { id: users.id, name: users.name, email: users.email, username: users.username } }).from(devices).innerJoin(users, eq(devices.userId, users.id)).orderBy(desc(devices.createdAt)).limit(500);
+}
+
+export async function getAdminPayments() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ payment: payments, user: { id: users.id, name: users.name, email: users.email, username: users.username } }).from(payments).innerJoin(users, eq(payments.userId, users.id)).orderBy(desc(payments.createdAt)).limit(500);
+}
+
+export async function getAdminAuditLogs() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ log: auditLogs, user: { id: users.id, name: users.name, email: users.email, username: users.username } }).from(auditLogs).leftJoin(users, eq(auditLogs.userId, users.id)).orderBy(desc(auditLogs.createdAt)).limit(500);
 }
 
 export async function getLoaderSession(tokenHash: string) {

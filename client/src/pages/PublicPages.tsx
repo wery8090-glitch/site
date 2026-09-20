@@ -33,7 +33,7 @@ function withAuthTimeout<T>(promise: Promise<T>, timeoutMs = 15000) {
   return Promise.race([promise, new Promise<T>((_, reject) => window.setTimeout(() => reject(new Error("Запрос авторизации не ответил вовремя.")), timeoutMs))]);
 }
 
-function AuthCard({ mode }: { mode: "login" | "register" | "forgot" | "passwordless" }) {
+function AuthCard({ mode }: { mode: "login" | "register" | "forgot" | "passwordless" | "reset" }) {
   const [, navigate] = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -43,8 +43,9 @@ function AuthCard({ mode }: { mode: "login" | "register" | "forgot" | "passwordl
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const syncProfile = trpc.auth.syncProfile.useMutation();
-  const title = mode === "login" ? "С возвращением." : mode === "register" ? "Создать аккаунт." : mode === "passwordless" ? "Войти без пароля." : "Восстановить доступ.";
+  const title = mode === "login" ? "С возвращением." : mode === "register" ? "Создать аккаунт." : mode === "passwordless" ? "Войти без пароля." : mode === "reset" ? "Новый пароль." : "Восстановить доступ.";
   const finishAuth = async (next = "/dashboard") => { await withAuthTimeout(syncProfile.mutateAsync()); navigate(next); };
+  useEffect(() => { if (mode === "passwordless") { supabase.auth.getSession().then(({ data }) => { if (data.session) finishAuth(new URLSearchParams(window.location.search).get("next") || "/dashboard").catch(() => undefined); }); } }, [mode]);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
     try {
@@ -53,6 +54,9 @@ function AuthCard({ mode }: { mode: "login" | "register" | "forgot" | "passwordl
         if (otpError) throw otpError; setMessage("Ссылка для входа отправлена на email. Откройте её на этом устройстве.");
       } else if (mode === "forgot") {
         const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` }); if (resetError) throw resetError; setMessage("Если аккаунт существует, письмо для восстановления уже отправлено.");
+      } else if (mode === "reset") {
+        if (password.length < 6 || password !== confirmPassword) throw new Error("Пароли должны совпадать и содержать минимум 6 символов.");
+        const { error: updateError } = await supabase.auth.updateUser({ password }); if (updateError) throw updateError; setMessage("Пароль изменён. Теперь можно войти с новым паролем."); setPassword(""); setConfirmPassword("");
       } else if (mode === "register") {
         if (password !== confirmPassword) throw new Error("Пароли не совпадают.");
         const { data, error: registerError } = await supabase.auth.signUp({ email, password, options: { data: { username, name: username }, emailRedirectTo: `${window.location.origin}/login` } });
@@ -62,47 +66,10 @@ function AuthCard({ mode }: { mode: "login" | "register" | "forgot" | "passwordl
       }
     } catch (authError) { setError(mapSupabaseError(authError instanceof Error ? authError.message : "")); } finally { setBusy(false); }
   };
-  return <div className="min-h-screen bg-background"><PublicHeader /><div className="container flex min-h-[calc(100vh-74px)] items-center justify-center py-16"><form onSubmit={submit} className="glass w-full max-w-md rounded-3xl p-8 sm:p-10"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary text-[#10150c]"><Sparkles className="h-6 w-6" /></div><h1 className="mt-7 text-center text-3xl font-semibold tracking-[-.04em]">{title}</h1><p className="mt-3 text-center text-sm leading-6 text-muted-foreground">Supabase account для сайта и CHROMA Loader.</p>{mode === "register" && <label className="mt-7 block text-xs font-semibold text-muted-foreground">ИМЯ<input required value={username} onChange={e => setUsername(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>}<label className="mt-7 block text-xs font-semibold text-muted-foreground">EMAIL<input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>{mode !== "forgot" && mode !== "passwordless" && <><label className="mt-4 block text-xs font-semibold text-muted-foreground">ПАРОЛЬ<input required minLength={6} type="password" value={password} onChange={e => setPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>{mode === "register" && <label className="mt-4 block text-xs font-semibold text-muted-foreground">ПОВТОРИТЕ ПАРОЛЬ<input required minLength={6} type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>}</>}{(error || message) && <div className={`mt-4 rounded-xl border p-3 text-sm ${error ? "border-red-300/20 bg-red-300/[.06] text-red-100" : "border-primary/20 bg-primary/[.06] text-primary"}`}>{error || message}</div>}<button disabled={busy} className="mt-3 inline-flex h-12 w-full items-center justify-center rounded-xl bg-primary font-bold text-[#10150c] transition hover:bg-[#d0ff73] disabled:cursor-wait disabled:opacity-60">{busy ? "Подождите…" : mode === "login" ? "ВОЙТИ  →" : mode === "register" ? "СОЗДАТЬ АККАУНТ  →" : mode === "passwordless" ? "ОТПРАВИТЬ ССЫЛКУ  →" : "ОТПРАВИТЬ ПИСЬМО  →"}</button><div className="mt-5 flex flex-wrap justify-center gap-x-3 gap-y-2 text-xs text-muted-foreground">{mode === "login" && <Link href="/passwordless" className="text-primary hover:underline">Войти без пароля</Link>}{mode === "login" && <Link href="/register" className="text-primary hover:underline">Создать аккаунт</Link>}{mode === "login" && <Link href="/forgot-password" className="hover:text-foreground">Забыли пароль?</Link>}{mode === "passwordless" && <Link href="/login" className="text-primary hover:underline">Войти с паролем</Link>}{mode === "register" && <Link href="/login" className="text-primary hover:underline">Уже есть аккаунт?</Link>}{mode === "forgot" && <Link href="/login" className="text-primary hover:underline">Войти</Link>}</div></form></div></div>;
+  return <div className="min-h-screen bg-background"><PublicHeader /><div className="container flex min-h-[calc(100vh-74px)] items-center justify-center py-16"><form onSubmit={submit} className="glass w-full max-w-md rounded-3xl p-8 sm:p-10"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary text-[#10150c]"><Sparkles className="h-6 w-6" /></div><h1 className="mt-7 text-center text-3xl font-semibold tracking-[-.04em]">{title}</h1><p className="mt-3 text-center text-sm leading-6 text-muted-foreground">Supabase account для сайта и CHROMA Loader.</p>{mode === "register" && <label className="mt-7 block text-xs font-semibold text-muted-foreground">ИМЯ<input required value={username} onChange={e => setUsername(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>}{!['passwordless', 'reset'].includes(mode) && <label className="mt-7 block text-xs font-semibold text-muted-foreground">EMAIL<input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>}{mode !== "forgot" && mode !== "passwordless" && <><label className="mt-4 block text-xs font-semibold text-muted-foreground">ПАРОЛЬ<input required minLength={6} type="password" value={password} onChange={e => setPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>{(mode === "register" || mode === "reset") && <label className="mt-4 block text-xs font-semibold text-muted-foreground">ПОВТОРИТЕ ПАРОЛЬ<input required minLength={6} type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-3 text-sm outline-none focus:border-primary/60" /></label>}</>}{(error || message) && <div className={`mt-4 rounded-xl border p-3 text-sm ${error ? "border-red-300/20 bg-red-300/[.06] text-red-100" : "border-primary/20 bg-primary/[.06] text-primary"}`}>{error || message}</div>}<button disabled={busy} className="mt-3 inline-flex h-12 w-full items-center justify-center rounded-xl bg-primary font-bold text-[#10150c] transition hover:bg-[#d0ff73] disabled:cursor-wait disabled:opacity-60">{busy ? "Подождите…" : mode === "login" ? "ВОЙТИ  →" : mode === "register" ? "СОЗДАТЬ АККАУНТ  →" : mode === "passwordless" ? "ОТПРАВИТЬ ССЫЛКУ  →" : mode === "reset" ? "СОХРАНИТЬ ПАРОЛЬ  →" : "ОТПРАВИТЬ ПИСЬМО  →"}</button><div className="mt-5 flex flex-wrap justify-center gap-x-3 gap-y-2 text-xs text-muted-foreground">{mode === "login" && <Link href="/passwordless" className="text-primary hover:underline">Войти без пароля</Link>}{mode === "login" && <Link href="/register" className="text-primary hover:underline">Создать аккаунт</Link>}{mode === "login" && <Link href="/forgot-password" className="hover:text-foreground">Забыли пароль?</Link>}{mode === "passwordless" && <Link href="/login" className="text-primary hover:underline">Войти с паролем</Link>}{mode === "register" && <Link href="/login" className="text-primary hover:underline">Уже есть аккаунт?</Link>}{(mode === "forgot" || mode === "reset") && <Link href="/login" className="text-primary hover:underline">Войти</Link>}</div></form></div></div>;
 }
 export function LoginPage() { return <AuthCard mode="login" />; }
 export function RegisterPage() { return <AuthCard mode="register" />; }
 export function ForgotPasswordPage() { return <AuthCard mode="forgot" />; }
-export function ResetPasswordPage() {
-  const [, navigate] = useLocation();
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [ready, setReady] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  useEffect(() => {
-    let active = true;
-    const checkSession = async () => {
-      const { data, error: sessionError } = await supabase.auth.getSession();
-      if (!active) return;
-      if (sessionError || !data.session) setError("Ссылка восстановления недействительна или уже истекла. Запросите новую.");
-      else setReady(true);
-    };
-    void checkSession();
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!active) return;
-      if (session) { setReady(true); setError(""); }
-    });
-    return () => { active = false; data.subscription.unsubscribe(); };
-  }, []);
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault(); setBusy(true); setError(""); setMessage("");
-    try {
-      if (!ready) throw new Error("Сначала откройте свежую ссылку из письма.");
-      if (password.length < 6) throw new Error("Пароль должен содержать минимум 6 символов.");
-      if (password !== confirmPassword) throw new Error("Пароли не совпадают.");
-      const { error: updateError } = await supabase.auth.updateUser({ password });
-      if (updateError) throw updateError;
-      await supabase.auth.signOut();
-      setMessage("Пароль изменён. Теперь можно войти с новым паролем.");
-      window.setTimeout(() => navigate("/login"), 1200);
-    } catch (caught) { setError(mapSupabaseError(caught instanceof Error ? caught.message : "")); } finally { setBusy(false); }
-  };
-  return <div className="min-h-screen bg-background"><PublicHeader /><div className="container flex min-h-[calc(100vh-74px)] items-center justify-center py-16"><form onSubmit={submit} className="glass w-full max-w-md rounded-3xl p-8 sm:p-10"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary text-[#10150c]"><LockKeyhole className="h-6 w-6" /></div><h1 className="mt-7 text-center text-3xl font-semibold tracking-[-.04em]">Новый пароль.</h1><p className="mt-3 text-center text-sm leading-6 text-muted-foreground">Ссылка подтверждена через Supabase. Задайте новый пароль для CHROMA.</p><label className="mt-7 block text-xs font-semibold text-muted-foreground">НОВЫЙ ПАРОЛЬ<input required minLength={6} type="password" value={password} onChange={event => setPassword(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label><label className="mt-4 block text-xs font-semibold text-muted-foreground">ПОВТОРИТЕ ПАРОЛЬ<input required minLength={6} type="password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm outline-none focus:border-primary/60" /></label>{(error || message) && <div className={`mt-4 rounded-xl border p-3 text-sm ${error ? "border-red-300/20 bg-red-300/[.06] text-red-100" : "border-primary/20 bg-primary/[.06] text-primary"}`}>{error || message}</div>}<button disabled={busy || !ready} className="mt-7 inline-flex h-12 w-full items-center justify-center rounded-xl bg-primary font-bold text-[#10150c] transition hover:bg-[#d0ff73] disabled:cursor-wait disabled:opacity-60">{busy ? "Подождите…" : "СОХРАНИТЬ НОВЫЙ ПАРОЛЬ →"}</button><div className="mt-5 text-center text-xs text-muted-foreground"><Link href="/forgot-password" className="text-primary hover:underline">Запросить новую ссылку</Link></div></form></div></div>;
-}
 export function PasswordlessPage() { return <AuthCard mode="passwordless" />; }
+export function ResetPasswordPage() { return <AuthCard mode="reset" />; }
