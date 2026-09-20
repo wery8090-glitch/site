@@ -6,9 +6,19 @@ import { ENV } from "./_core/env";
 const supabaseUrl = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? "https://rsbcqzeyiazogktztubu.supabase.co";
 const jwksUrl = process.env.SUPABASE_JWKS_URL ?? `${supabaseUrl}/auth/v1/.well-known/jwks.json`;
 const jwks = createRemoteJWKSet(new URL(jwksUrl));
-const adminEmails = new Set((process.env.ADMIN_EMAILS ?? "wery8090@gmail.com").split(",").map(value => value.trim().toLowerCase()).filter(Boolean));
 
 function bearer(req: Request) { const value = req.header("authorization"); return value?.startsWith("Bearer ") ? value.slice(7).trim() : null; }
+
+async function supabaseProfileRole(openId: string) {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY;
+  if (!serviceKey) return null;
+  try {
+    const response = await fetch(`${supabaseUrl}/rest/v1/profiles?select=role,status&open_id=eq.${encodeURIComponent(openId)}&limit=1`, { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } });
+    if (!response.ok) return null;
+    const rows = await response.json() as Array<{ role?: string; status?: string }>;
+    return rows[0] ?? null;
+  } catch { return null; }
+}
 export async function authenticateSupabaseRequest(req: Request) {
   const token = bearer(req);
   if (!token) return null;
@@ -20,9 +30,11 @@ export async function authenticateSupabaseRequest(req: Request) {
     const username = typeof metadata.username === "string" ? metadata.username : email?.split("@")[0] ?? "Chroma User";
     await upsertUser({ openId: payload.sub, email, username, name: username, loginMethod: "supabase", lastSignedIn: new Date() });
     const storedUser = await getUserByOpenId(payload.sub);
-    const isAllowlistedAdmin = Boolean(email && adminEmails.has(email.toLowerCase()));
-    if (storedUser) return isAllowlistedAdmin ? { ...storedUser, role: "admin" as const, status: "active" as const } : storedUser;
-    return { id: 0, openId: payload.sub, username, name: username, email, loginMethod: "supabase", role: isAllowlistedAdmin ? "admin" as const : "user" as const, status: "active" as const, createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(), lastLoginAt: new Date() };
+    const supabaseProfile = await supabaseProfileRole(payload.sub);
+    const isAdmin = supabaseProfile?.role === "admin" || supabaseProfile?.role === "owner";
+    const isActive = supabaseProfile?.status ? supabaseProfile.status === "active" : storedUser?.status !== "banned";
+    if (storedUser) return { ...storedUser, role: isAdmin ? "admin" as const : "user" as const, status: isActive ? "active" as const : "suspended" as const };
+    return { id: 0, openId: payload.sub, username, name: username, email, loginMethod: "supabase", role: isAdmin ? "admin" as const : "user" as const, status: isActive ? "active" as const : "suspended" as const, createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(), lastLoginAt: new Date() };
   } catch { return null; }
 }
 
