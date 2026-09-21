@@ -12,7 +12,7 @@ public sealed record ClientVersion(string Version, string MinecraftVersion, stri
 
 public sealed class ChromaApiClient
 {
-    public const string WebsiteUrl = "https://chroma-client-coghj9mdn-pozetiv.vercel.app";
+    public const string WebsiteUrl = "https://chroma-client-pozetiv.vercel.app";
     private static readonly string[] WebsiteEndpoints =
     {
         "https://chroma-client-pozetiv.vercel.app",
