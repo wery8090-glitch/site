@@ -14,7 +14,7 @@ export default async function handler(req: any, res: any) {
   const email = clean(req.body?.email, 320).toLowerCase();
   const password = typeof req.body?.password === "string" ? req.body.password : "";
   const username = clean(req.body?.username, 48);
-  if (!email || !email.includes("@") || !username || password.length < 6) return json(res, 400, { error: "INVALID_REQUEST", message: "Проверьте username, email и пароль минимум из 6 символов." });
+  if (!email || !email.includes("@") || !username || password.length < 8 || !/[a-zа-я]/.test(password) || !/[A-ZА-Я]/.test(password) || !/[0-9]/.test(password)) return json(res, 400, { error: "INVALID_REQUEST", message: "Пароль должен содержать минимум 8 символов, строчную и заглавную букву и цифру." });
   if (!SECRET_KEY || !PUBLISHABLE_KEY) return json(res, 503, { error: "AUTH_NOT_CONFIGURED", message: "Сервис регистрации не настроен." });
   try {
     const created = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, { method: "POST", headers: { apikey: SECRET_KEY, Authorization: `Bearer ${SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { username, name: username } }) });
