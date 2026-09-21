@@ -19,23 +19,48 @@ async function supabaseProfileRole(openId: string) {
     return rows[0] ?? null;
   } catch { return null; }
 }
+
+async function fetchSupabaseUser(token: string) {
+  try {
+    const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    const response = await fetch(`${supabaseUrl}/auth/v1/user`, { headers: { apikey: publishableKey ?? "", Authorization: `Bearer ${token}` } });
+    if (!response.ok) return null;
+    const body = await response.json() as { id?: string; email?: string; user_metadata?: Record<string, unknown> };
+    return typeof body.id === "string" && body.id ? body : null;
+  } catch { return null; }
+}
+
 export async function authenticateSupabaseRequest(req: Request) {
   const token = bearer(req);
   if (!token) return null;
+  let openId: string | null = null;
+  let email: string | null = null;
+  let metadata: Record<string, unknown> = {};
   try {
     const { payload } = await jwtVerify(token, jwks, { issuer: `${supabaseUrl}/auth/v1`, audience: "authenticated" });
-    if (typeof payload.sub !== "string" || payload.sub.length === 0) return null;
-    const email = typeof payload.email === "string" ? payload.email : null;
-    const metadata = payload.user_metadata && typeof payload.user_metadata === "object" ? payload.user_metadata as Record<string, unknown> : {};
-    const username = typeof metadata.username === "string" ? metadata.username : email?.split("@")[0] ?? "Chroma User";
-    await upsertUser({ openId: payload.sub, email, username, name: username, loginMethod: "supabase", lastSignedIn: new Date() });
-    const storedUser = await getUserByOpenId(payload.sub);
-    const supabaseProfile = await supabaseProfileRole(payload.sub);
-    const isAdmin = supabaseProfile?.role === "admin" || supabaseProfile?.role === "owner";
-    const isActive = supabaseProfile?.status ? supabaseProfile.status === "active" : storedUser?.status !== "banned";
-    if (storedUser) return { ...storedUser, role: isAdmin ? "admin" as const : "user" as const, status: isActive ? "active" as const : "suspended" as const };
-    return { id: 0, openId: payload.sub, username, name: username, email, loginMethod: "supabase", role: isAdmin ? "admin" as const : "user" as const, status: isActive ? "active" as const : "suspended" as const, createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(), lastLoginAt: new Date() };
-  } catch { return null; }
+    if (typeof payload.sub === "string" && payload.sub.length > 0) {
+      openId = payload.sub;
+      email = typeof payload.email === "string" ? payload.email : null;
+      metadata = payload.user_metadata && typeof payload.user_metadata === "object" ? payload.user_metadata as Record<string, unknown> : {};
+    }
+  } catch {
+    const remoteUser = await fetchSupabaseUser(token);
+    if (!remoteUser) return null;
+    openId = remoteUser.id ?? null;
+    email = remoteUser.email ?? null;
+    metadata = remoteUser.user_metadata ?? {};
+  }
+  if (!openId) return null;
+  const username = typeof metadata.username === "string" ? metadata.username : email?.split("@")[0] ?? "Chroma User";
+  await upsertUser({ openId, email, username, name: username, loginMethod: "supabase", lastSignedIn: new Date() });
+  const storedUser = await getUserByOpenId(openId);
+  const supabaseProfile = await supabaseProfileRole(openId);
+  const profileRole = supabaseProfile?.role;
+  const knownRoles = ["user", "developer", "admin", "support", "media", "moderator"] as const;
+  const role = profileRole === "owner" ? "developer" : knownRoles.includes(profileRole as typeof knownRoles[number]) ? profileRole as typeof knownRoles[number] : storedUser?.role ?? "user";
+  const isActive = supabaseProfile?.status ? supabaseProfile.status === "active" : storedUser?.status !== "banned";
+  if (storedUser) return { ...storedUser, role, status: isActive ? "active" as const : "suspended" as const };
+  return { id: 0, openId, username, name: username, email, loginMethod: "supabase", role, status: isActive ? "active" as const : "suspended" as const, createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(), lastLoginAt: new Date() };
 }
 
 export function supabaseConfigIsPresent() { return Boolean(ENV.supabaseUrl && ENV.supabasePublishableKey); }

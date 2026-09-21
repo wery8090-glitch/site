@@ -22,7 +22,7 @@ export const users = mysqlTable(
     name: text("name"),
     email: varchar("email", { length: 320 }),
     loginMethod: varchar("loginMethod", { length: 64 }),
-    role: mysqlEnum("role", ["user", "moderator", "admin"]).default("user").notNull(),
+    role: mysqlEnum("role", ["user", "developer", "admin", "support", "media", "moderator"]).default("user").notNull(),
     status: mysqlEnum("status", ["active", "suspended", "banned"]).default("active").notNull(),
     createdAt: createdAt(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -147,9 +147,26 @@ export const payments = mysqlTable("payments", { id: id(), userId: int("userId")
 export const auditLogs = mysqlTable("audit_logs", { id: id(), userId: int("userId"), action: varchar("action", { length: 96 }).notNull(), metadata: text("metadata"), ipHash: varchar("ipHash", { length: 128 }), createdAt: createdAt() }, table => ({ userIdx: index("audit_logs_user_idx").on(table.userId), actionIdx: index("audit_logs_action_idx").on(table.action), createdIdx: index("audit_logs_created_idx").on(table.createdAt) }));
 export const passwordResets = mysqlTable("password_resets", { id: id(), userId: int("userId").notNull(), tokenHash: varchar("tokenHash", { length: 128 }).notNull(), expiresAt: timestamp("expiresAt").notNull(), usedAt: timestamp("usedAt"), createdAt: createdAt() }, table => ({ tokenUnique: uniqueIndex("password_resets_token_unique").on(table.tokenHash), userIdx: index("password_resets_user_idx").on(table.userId) }));
 
+export const supportTickets = mysqlTable("support_tickets", {
+  id: id(),
+  userId: int("userId").notNull(),
+  assigneeId: int("assigneeId"),
+  subject: varchar("subject", { length: 160 }).notNull(),
+  category: mysqlEnum("category", ["subscription", "bug", "account", "loader", "other"]).default("other").notNull(),
+  status: mysqlEnum("status", ["open", "pending", "closed"]).default("open").notNull(),
+  priority: mysqlEnum("priority", ["low", "normal", "high"]).default("normal").notNull(),
+  createdAt: createdAt(), updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, table => ({ ticketUserIdx: index("support_tickets_user_idx").on(table.userId), ticketStatusIdx: index("support_tickets_status_idx").on(table.status), ticketAssigneeIdx: index("support_tickets_assignee_idx").on(table.assigneeId), ticketUpdatedIdx: index("support_tickets_updated_idx").on(table.updatedAt) }));
+
+export const supportMessages = mysqlTable("support_messages", {
+  id: id(), ticketId: int("ticketId").notNull(), authorId: int("authorId").notNull(), body: text("body").notNull(), internal: boolean("internal").default(false).notNull(), createdAt: createdAt(),
+}, table => ({ messageTicketIdx: index("support_messages_ticket_idx").on(table.ticketId), messageAuthorIdx: index("support_messages_author_idx").on(table.authorId), messageCreatedIdx: index("support_messages_created_idx").on(table.createdAt) }));
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
 export type Device = typeof devices.$inferSelect;
 export type ClientVersion = typeof clientVersions.$inferSelect;
+export type SupportTicket = typeof supportTickets.$inferSelect;
+export type SupportMessage = typeof supportMessages.$inferSelect;

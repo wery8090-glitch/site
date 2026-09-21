@@ -2,6 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { uiText, useLanguage } from "@/contexts/LanguageContext";
 import { Button } from "@/components/ui/button";
+import { trpc } from "@/lib/trpc";
 import {
   Activity,
   ArrowUpRight,
@@ -12,6 +13,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  MessageCircle,
   Monitor,
   Settings,
   Shield,
@@ -70,17 +72,20 @@ const appLinks = [
   { href: "/dashboard/downloads", label: "Downloads", icon: Download },
   { href: "/dashboard/security", label: "Security", icon: Shield },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
+  { href: "/dashboard/support", label: "Support", icon: MessageCircle },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/login" });
+  const { data: serverUser } = trpc.auth.me.useQuery(undefined, { enabled: Boolean(user) });
   const { language } = useLanguage();
   const t = uiText[language];
   const [location] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const displayName = user?.name || user?.email?.split("@")[0] || "Chroma user";
+  const role = serverUser?.role ?? user?.role ?? "user";
   const initials = displayName.slice(0, 2).toUpperCase();
-  const localizedAppLinks = appLinks.map(item => ({ ...item, label: item.href === "/dashboard" ? t.overview : item.href.includes("subscription") ? t.subscription : item.href.includes("devices") ? t.devices : item.href.includes("downloads") ? t.downloads : item.href.includes("security") ? t.security : t.settings }));
+  const localizedAppLinks = appLinks.map(item => ({ ...item, label: item.href === "/dashboard" ? t.overview : item.href.includes("subscription") ? t.subscription : item.href.includes("devices") ? t.devices : item.href.includes("downloads") ? t.downloads : item.href.includes("security") ? t.security : item.href.includes("support") ? t.support : t.settings }));
   if (!user) return <div className="grid min-h-screen place-items-center bg-background"><div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>;
   return (
     <div className="min-h-screen bg-[#0a0c0b]">
@@ -88,11 +93,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex items-center justify-between px-2"><ChromaMark /><button className="rounded-lg p-1 text-muted-foreground lg:hidden" onClick={() => setMobileOpen(false)}><X className="h-5 w-5" /></button></div>
         <div className="mt-10 px-3 text-[10px] font-bold uppercase tracking-[.2em] text-muted-foreground/70">{t.workspace}</div>
         <nav className="mt-3 grid gap-1">{localizedAppLinks.map(item => { const active = location === item.href; const Icon = item.icon; return <Link key={item.href} href={item.href} onClick={() => setMobileOpen(false)} className={`focus-ring group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${active ? "bg-primary text-[#10150c] shadow-[0_8px_28px_rgba(184,246,65,.12)]" : "text-muted-foreground hover:bg-white/[.045] hover:text-foreground"}`}><Icon className="h-4 w-4" /><span>{item.label}</span>{active && <ChevronRight className="ml-auto h-4 w-4" />}</Link>})}</nav>
-        {user.role === "admin" && <><div className="mt-8 px-3 text-[10px] font-bold uppercase tracking-[.2em] text-muted-foreground/70">{t.controlRoom}</div><Link href="/admin" className={`mt-3 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${location.startsWith("/admin") ? "bg-white/[.08] text-primary" : "text-muted-foreground hover:bg-white/[.045] hover:text-foreground"}`}><Activity className="h-4 w-4" />{t.admin}</Link></>}
-        <div className="mt-auto border-t border-white/[.07] pt-4"><div className="flex items-center gap-3 rounded-xl bg-white/[.035] px-3 py-3"><div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary/15 text-xs font-bold text-primary">{initials}</div><div className="min-w-0"><p className="truncate text-sm font-semibold">{displayName}</p><p className="truncate text-xs text-muted-foreground">{user.role}</p></div><button onClick={() => logout()} className="ml-auto rounded-lg p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground" aria-label="Log out"><LogOut className="h-4 w-4" /></button></div></div>
+        {["developer", "admin", "support", "media", "moderator"].includes(role) && <><div className="mt-8 px-3 text-[10px] font-bold uppercase tracking-[.2em] text-muted-foreground/70">{t.controlRoom}</div><Link href="/admin" className={`mt-3 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${location.startsWith("/admin") ? "bg-white/[.08] text-primary" : "text-muted-foreground hover:bg-white/[.045] hover:text-foreground"}`}><Activity className="h-4 w-4" />{t.admin}</Link><Link href="/support/panel" className={`mt-1 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium ${location === "/support/panel" ? "bg-white/[.08] text-primary" : "text-muted-foreground hover:bg-white/[.045] hover:text-foreground"}`}><MessageCircle className="h-4 w-4" />Supp-panel</Link></>}
+        <div className="mt-auto border-t border-white/[.07] pt-4"><div className="flex items-center gap-3 rounded-xl bg-white/[.035] px-3 py-3"><div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary/15 text-xs font-bold text-primary">{initials}</div><div className="min-w-0"><p className="truncate text-sm font-semibold">{displayName}</p><p className="truncate text-xs text-muted-foreground">{role}</p></div><button onClick={() => logout()} className="ml-auto rounded-lg p-1.5 text-muted-foreground hover:bg-white/10 hover:text-foreground" aria-label="Log out"><LogOut className="h-4 w-4" /></button></div></div>
       </aside>
       {mobileOpen && <button className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close menu" />}
-      <main className="lg:pl-[266px]"><div className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-white/[.07] bg-[#0a0c0b]/80 px-5 backdrop-blur-xl lg:hidden"><button onClick={() => setMobileOpen(true)} className="rounded-lg p-2 text-muted-foreground hover:bg-white/5"><Menu className="h-5 w-5" /></button><ChromaMark compact /><div className="w-9" /></div>{children}</main>
+      <main className="lg:pl-[266px]"><div className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-white/[.07] bg-[#0a0c0b]/80 px-5 backdrop-blur-xl lg:hidden"><button onClick={() => setMobileOpen(true)} className="rounded-lg p-2 text-muted-foreground hover:bg-white/5"><Menu className="h-5 w-5" /></button><ChromaMark compact /><div className="w-9" /></div>{children}<Link href="/dashboard/support" aria-label="Открыть поддержку" className="fixed bottom-5 right-5 z-40 grid h-14 w-14 place-items-center rounded-full bg-primary text-[#10150c] shadow-[0_12px_36px_rgba(184,246,65,.3)] transition hover:scale-105"><MessageCircle className="h-6 w-6" /></Link></main>
     </div>
   );
 }

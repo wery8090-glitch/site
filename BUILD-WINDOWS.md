@@ -89,13 +89,16 @@ pnpm start
 
 ## Деплой в Vercel
 
-Проект уже содержит `vercel.json` с Node.js `22.x`. Для деплоя через Vercel CLI:
+Проект уже содержит совместимую конфигурацию `vercel.json`; версия Node.js `22.x` задаётся через `engines` в `package.json`. Для деплоя через Vercel CLI:
 
 ```cmd
 npm install --global vercel
+vercel logout
 vercel login
 vercel
 vercel --prod
 ```
+
+Если CLI пишет `The specified token is not valid`, выполните `vercel logout`, затем `vercel login` и войдите в аккаунт, у которого есть доступ к проекту `chroma-client`.
 
 Перед production-деплоем добавьте секретные переменные в настройках проекта Vercel. Никогда не вставляйте секретные ключи в исходники.

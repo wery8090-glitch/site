@@ -27,11 +27,21 @@ const requireUser = t.middleware(async opts => {
 
 export const protectedProcedure = t.procedure.use(requireUser);
 
+const requireStaff = t.middleware(async opts => {
+  const { ctx, next } = opts;
+  if (!ctx.user || !["developer", "admin", "support", "media", "moderator"].includes(ctx.user.role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Staff access required." });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const staffProcedure = t.procedure.use(requireStaff);
+
 export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
 
-    if (!ctx.user || ctx.authSource !== "supabase" || ctx.user.role !== 'admin') {
+    if (!ctx.user || ctx.authSource !== "supabase" || !["developer", "admin"].includes(ctx.user.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 

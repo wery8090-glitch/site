@@ -39,6 +39,7 @@ export interface PaymentProvider {
 export class FunPayProvider implements PaymentProvider {
   readonly name = "FunPay" as const;
   getCheckoutUrl(input: { plan: PurchasePlan; duration?: PurchaseDuration }) {
+    if (input.plan === "base" && input.duration === ("lifetime" as PurchaseDuration)) return "https://funpay.com/lots/offer?id=77264834";
     return PURCHASE_OFFERS.find(offer => offer.plan === input.plan && offer.duration === input.duration)?.url ?? null;
   }
 }

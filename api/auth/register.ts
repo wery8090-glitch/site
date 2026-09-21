@@ -8,13 +8,24 @@ function json(res: any, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 function clean(value: unknown, max: number) { return typeof value === "string" && value.trim() && value.length <= max ? value.trim() : ""; }
+function passwordError(password: string) {
+  if (password.length < 8) return "Пароль должен содержать минимум 8 символов.";
+  if (!/[a-zа-я]/.test(password)) return "Пароль должен содержать строчную букву.";
+  if (!/[A-ZА-Я]/.test(password)) return "Пароль должен содержать заглавную букву.";
+  if (!/[0-9]/.test(password)) return "Пароль должен содержать цифру.";
+  if (!/[^A-Za-zА-Яа-я0-9]/.test(password)) return "Пароль должен содержать специальный символ: !, @, #, $ или другой знак.";
+  return "";
+}
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return json(res, 405, { error: "METHOD_NOT_ALLOWED", message: "Используйте POST." });
   const email = clean(req.body?.email, 320).toLowerCase();
   const password = typeof req.body?.password === "string" ? req.body.password : "";
   const username = clean(req.body?.username, 48);
-  if (!email || !email.includes("@") || !username || password.length < 8 || !/[a-zа-я]/.test(password) || !/[A-ZА-Я]/.test(password) || !/[0-9]/.test(password)) return json(res, 400, { error: "INVALID_REQUEST", message: "Пароль должен содержать минимум 8 символов, строчную и заглавную букву и цифру." });
+  if (!email || !email.includes("@")) return json(res, 400, { error: "INVALID_EMAIL", message: "Введите корректный email." });
+  if (!username) return json(res, 400, { error: "INVALID_USERNAME", message: "Введите имя пользователя." });
+  const passwordMessage = passwordError(password);
+  if (passwordMessage) return json(res, 400, { error: "INVALID_PASSWORD", message: passwordMessage });
   if (!SECRET_KEY || !PUBLISHABLE_KEY) return json(res, 503, { error: "AUTH_NOT_CONFIGURED", message: "Сервис регистрации не настроен." });
   try {
     const created = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, { method: "POST", headers: { apikey: SECRET_KEY, Authorization: `Bearer ${SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { username, name: username } }) });

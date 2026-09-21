@@ -6,6 +6,7 @@ import { registerStorageProxy } from "./_core/storageProxy";
 import { appRouter } from "./routers";
 import { registerSupabaseRegistrationRoute } from "./supabaseRegistration";
 import { createContext } from "./_core/context";
+import { registerLoaderRoutes } from "./loader";
 
 export function createApp() {
   const app = express();

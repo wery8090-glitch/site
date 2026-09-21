@@ -9,9 +9,10 @@ function errorMessage(value: unknown) { return typeof value === "object" && valu
 export function registerSupabaseRegistrationRoute(app: Express) {
   app.post("/api/auth/register", async (req: Request, res: Response) => {
     const email = text(req.body?.email, 320)?.toLowerCase();
-    const password = typeof req.body?.password === "string" && req.body.password.length >= 6 ? req.body.password : null;
+    const password = typeof req.body?.password === "string" ? req.body.password : null;
     const username = text(req.body?.username, 48);
-    if (!email || !password || !username) return res.status(400).json({ error: "INVALID_REQUEST", message: "Введите username, email и пароль минимум из 6 символов." });
+    const passwordError = !password ? "Введите пароль." : password.length < 8 ? "Пароль должен содержать минимум 8 символов." : !/[a-zа-я]/.test(password) ? "Добавьте в пароль хотя бы одну строчную букву." : !/[A-ZА-Я]/.test(password) ? "Добавьте в пароль хотя бы одну заглавную букву." : !/[0-9]/.test(password) ? "Добавьте в пароль хотя бы одну цифру." : "";
+    if (!email || !username || passwordError) return res.status(400).json({ error: "INVALID_REQUEST", message: passwordError || "Введите username и email." });
     const serviceKey = process.env.SUPABASE_SECRET_KEY;
     if (!serviceKey || !publishableKey) return res.status(503).json({ error: "AUTH_NOT_CONFIGURED", message: "Регистрация временно недоступна: серверная авторизация не настроена." });
     try {
